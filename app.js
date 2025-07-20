@@ -1,57 +1,62 @@
 const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 
-// These are the correct Rebrickable category IDs:
 const CATEGORIES = {
-  hair: 63,   // Minifig Headgear
-  head: 60,   // Minifig Heads
-  torso: 61,  // Minifig Torso Assembly
-  legs: 59    // Minifig Lower Body
+  hair: 63,
+  head: 60,
+  torso: 61,
+  legs: 59
 };
 
-// Fetch all parts from a given category and display them
+const partsData = {
+  hair: [],
+  head: [],
+  torso: [],
+  legs: []
+};
+
+const selectedIndex = {
+  hair: 0,
+  head: 0,
+  torso: 0,
+  legs: 0
+};
+
 async function fetchPartsByCategory(categoryId, partType) {
   const url = `https://rebrickable.com/api/v3/lego/parts/?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
-    displayParts(data.results, partType);
+
+    // Filter to only parts with images and typical size
+    const cleanParts = data.results.filter(p => p.part_img_url && !p.part_img_url.includes('blank') && p.name.length > 0);
+
+    partsData[partType] = cleanParts;
+    updatePartImage(partType);
   } catch (error) {
-    console.error(`Error fetching ${partType} parts:`, error);
+    console.error(`Failed to load ${partType} parts`, error);
   }
 }
 
-// Display parts in the corresponding scrollable selector
-function displayParts(parts, partType) {
-  const container = document.getElementById(`${partType}-selector`);
-  container.innerHTML = "";
-
-  parts.forEach(part => {
-    if (!part.part_img_url) return;
-
-    const img = document.createElement("img");
-    img.src = part.part_img_url;
-    img.alt = part.name;
-    img.className = "part-img";
-
-    img.onclick = () => selectPart(partType, part.part_img_url);
-    container.appendChild(img);
-  });
+function updatePartImage(type) {
+  const view = document.getElementById(`${type}-view`);
+  const part = partsData[type][selectedIndex[type]];
+  if (part && view) {
+    view.src = part.part_img_url;
+  }
 }
 
-// Save and display selected parts on the minifigure preview
-const selectedParts = {
-  hair: null,
-  head: null,
-  torso: null,
-  legs: null
-};
-
-function selectPart(type, imgUrl) {
-  selectedParts[type] = imgUrl;
-  document.getElementById(`${type}-view`).src = imgUrl;
+function prevPart(type) {
+  if (partsData[type].length === 0) return;
+  selectedIndex[type] = (selectedIndex[type] - 1 + partsData[type].length) % partsData[type].length;
+  updatePartImage(type);
 }
 
-// Load all categories when the page starts
+function nextPart(type) {
+  if (partsData[type].length === 0) return;
+  selectedIndex[type] = (selectedIndex[type] + 1) % partsData[type].length;
+  updatePartImage(type);
+}
+
 function init() {
   for (const [type, id] of Object.entries(CATEGORIES)) {
     fetchPartsByCategory(id, type);
