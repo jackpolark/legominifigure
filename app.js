@@ -22,25 +22,26 @@ const selectedIndex = {
   legs: 0
 };
 
-// ✅ Updated: Get Star Wars set numbers
-async function fetchSetNumsByTheme(themeId) {
-  const url = `https://rebrickable.com/api/v3/lego/sets/?theme_id=${themeId}&page_size=100&key=${API_KEY}`;
+async function fetchStarWarsSetNums() {
+  const url = `https://rebrickable.com/api/v3/lego/sets/?theme_id=${THEME_ID}&page_size=20&key=${API_KEY}`;
   const response = await fetch(url);
   const data = await response.json();
   return data.results.map(set => set.set_num);
 }
 
-// ✅ Clean: Fetch part details from a given set
 async function fetchPartsFromSet(setNum) {
-  const url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=1000&key=${API_KEY}`;
+  const url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=1000&inc_part_details=1&key=${API_KEY}`;
   const response = await fetch(url);
   const data = await response.json();
-  return data.results.filter(p => p.part?.part_img_url); // Filter for parts with images
+  return data.results.filter(p =>
+    p.part &&
+    p.part.part_img_url &&
+    Object.values(CATEGORIES).includes(p.part.part_cat_id)
+  );
 }
 
-// ✅ Main loader for Star Wars minifig parts only
 async function loadThemeParts() {
-  const setNums = await fetchSetNumsByTheme(THEME_ID);
+  const setNums = await fetchStarWarsSetNums();
 
   const categoryParts = {
     hair: [],
@@ -52,15 +53,17 @@ async function loadThemeParts() {
   for (const setNum of setNums) {
     const parts = await fetchPartsFromSet(setNum);
 
-    for (const part of parts) {
-      const cat = part.part.part_cat_id;
-      const img = part.part.part_img_url;
+    for (const partObj of parts) {
+      const part = partObj.part;
+      const cat = part.part_cat_id;
+      const img = part.part_img_url;
+
       if (!img) continue;
 
-      if (cat === CATEGORIES.hair) categoryParts.hair.push(part.part);
-      else if (cat === CATEGORIES.head) categoryParts.head.push(part.part);
-      else if (cat === CATEGORIES.torso) categoryParts.torso.push(part.part);
-      else if (cat === CATEGORIES.legs) categoryParts.legs.push(part.part);
+      if (cat === CATEGORIES.hair) categoryParts.hair.push(part);
+      else if (cat === CATEGORIES.head) categoryParts.head.push(part);
+      else if (cat === CATEGORIES.torso) categoryParts.torso.push(part);
+      else if (cat === CATEGORIES.legs) categoryParts.legs.push(part);
     }
   }
 
@@ -71,7 +74,6 @@ async function loadThemeParts() {
   }
 }
 
-// ✅ UI Rendering
 function updatePartImage(type) {
   const part = partsData[type][selectedIndex[type]];
   if (part) {
