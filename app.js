@@ -1,5 +1,5 @@
 const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
-const ONE_PIECE_THEME_ID = 986;
+const THEME_ID = 18; // Star Wars
 
 const CATEGORIES = {
   hair: 63,   // Minifig Headgear
@@ -22,22 +22,25 @@ const selectedIndex = {
   legs: 0
 };
 
-async function fetchOnePieceSetNums() {
-  const url = `https://rebrickable.com/api/v3/lego/sets/?theme_id=${ONE_PIECE_THEME_ID}&page_size=100&key=${API_KEY}`;
+// ✅ Updated: Get Star Wars set numbers
+async function fetchSetNumsByTheme(themeId) {
+  const url = `https://rebrickable.com/api/v3/lego/sets/?theme_id=${themeId}&page_size=100&key=${API_KEY}`;
   const response = await fetch(url);
   const data = await response.json();
   return data.results.map(set => set.set_num);
 }
 
+// ✅ Clean: Fetch part details from a given set
 async function fetchPartsFromSet(setNum) {
   const url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=1000&key=${API_KEY}`;
   const response = await fetch(url);
   const data = await response.json();
-  return data.results.filter(p => p.part?.part_img_url);
+  return data.results.filter(p => p.part?.part_img_url); // Filter for parts with images
 }
 
+// ✅ Main loader for Star Wars minifig parts only
 async function loadThemeParts() {
-  const setNums = await fetchOnePieceSetNums();
+  const setNums = await fetchSetNumsByTheme(THEME_ID);
 
   const categoryParts = {
     hair: [],
@@ -68,6 +71,7 @@ async function loadThemeParts() {
   }
 }
 
+// ✅ UI Rendering
 function updatePartImage(type) {
   const part = partsData[type][selectedIndex[type]];
   if (part) {
