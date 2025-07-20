@@ -1,11 +1,11 @@
 const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 
-// Correct category IDs for each body part
+// Official Rebrickable category IDs for minifig parts
 const CATEGORIES = {
-  hair: 63,   // Headgear
-  head: 60,   // Heads
-  torso: 61,  // Torsos
-  legs: 59    // Legs
+  hair: 63,   // Minifig Headgear
+  head: 60,   // Minifig Heads
+  torso: 61,  // Minifig Torso Assembly
+  legs: 59    // Minifig Lower Body
 };
 
 const partsData = {
@@ -22,18 +22,18 @@ const selectedIndex = {
   legs: 0
 };
 
-// Fetch parts for a given category
-async function fetchPartsByCategory(categoryId, partType) {
-  const url = `https://rebrickable.com/api/v3/lego/parts/?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
+// ✅ CORRECTED: use part_cat_id instead of category_id
+async function fetchPartsByCategory(partCatId, partType) {
+  const url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${partCatId}&page_size=100&key=${API_KEY}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
 
-    // Only use parts with images
+    // Only use parts that have images
     const partsWithImages = data.results.filter(part => part.part_img_url);
     partsData[partType] = partsWithImages;
 
-    // Display the first part by default
+    // Initialize with the first part
     selectedIndex[partType] = 0;
     updatePartImage(partType);
   } catch (err) {
@@ -63,8 +63,8 @@ function nextPart(type) {
 }
 
 function init() {
-  for (const [type, categoryId] of Object.entries(CATEGORIES)) {
-    fetchPartsByCategory(categoryId, type);
+  for (const [type, partCatId] of Object.entries(CATEGORIES)) {
+    fetchPartsByCategory(partCatId, type);
   }
 }
 
