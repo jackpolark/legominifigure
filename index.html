@@ -9,52 +9,41 @@
 
   <h2>Build Your Minifigure</h2>
 
-<div id="customizer">
- <!-- One visible image per part + arrow buttons -->
-<h3>Select Hair</h3>
-<div class="carousel">
-  <button onclick="prevPart('hair')">◀</button>
-  <img id="hair-view" class="part-view" src="">
-  <button onclick="nextPart('hair')">▶</button>
-</div>
+  <div id="customizer">
+    <img id="hair-view" class="part-view" src="">
+    <img id="head-view" class="part-view" src="">
+    <img id="torso-view" class="part-view" src="">
+    <img id="legs-view" class="part-view" src="">
+  </div>
 
-<h3>Select Head</h3>
-<div class="carousel">
-  <button onclick="prevPart('head')">◀</button>
-  <img id="head-view" class="part-view" src="">
-  <button onclick="nextPart('head')">▶</button>
-</div>
+  <h3>Select Hair</h3>
+  <div class="carousel">
+    <button onclick="prevPart('hair')">◀</button>
+    <img id="hair-view" class="part-view" src="">
+    <button onclick="nextPart('hair')">▶</button>
+  </div>
 
-<h3>Select Torso</h3>
-<div class="carousel">
-  <button onclick="prevPart('torso')">◀</button>
-  <img id="torso-view" class="part-view" src="">
-  <button onclick="nextPart('torso')">▶</button>
-</div>
+  <h3>Select Head</h3>
+  <div class="carousel">
+    <button onclick="prevPart('head')">◀</button>
+    <img id="head-view" class="part-view" src="">
+    <button onclick="nextPart('head')">▶</button>
+  </div>
 
-<h3>Select Legs</h3>
-<div class="carousel">
-  <button onclick="prevPart('legs')">◀</button>
-  <img id="legs-view" class="part-view" src="">
-  <button onclick="nextPart('legs')">▶</button>
-</div>
+  <h3>Select Torso</h3>
+  <div class="carousel">
+    <button onclick="prevPart('torso')">◀</button>
+    <img id="torso-view" class="part-view" src="">
+    <button onclick="nextPart('torso')">▶</button>
+  </div>
 
-</div>
+  <h3>Select Legs</h3>
+  <div class="carousel">
+    <button onclick="prevPart('legs')">◀</button>
+    <img id="legs-view" class="part-view" src="">
+    <button onclick="nextPart('legs')">▶</button>
+  </div>
 
-<h3>Select Hair</h3>
-<div id="hair-selector" class="scroll-row"></div>
-
-<h3>Select Head</h3>
-<div id="head-selector" class="scroll-row"></div>
-
-<h3>Select Torso</h3>
-<div id="torso-selector" class="scroll-row"></div>
-
-<h3>Select Legs</h3>
-<div id="legs-selector" class="scroll-row"></div>
-
-
-  <!-- Load your JS -->
   <script src="app.js"></script>
 </body>
 </html>
