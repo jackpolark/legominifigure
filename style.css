@@ -1,0 +1,23 @@
+.scroll-row {
+  display: flex;
+  overflow-x: auto;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid #ccc;
+}
+
+.part-img {
+  width: 60px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: transform 0.2s;
+}
+.part-img:hover {
+  transform: scale(1.1);
+}
+
+.part-view {
+  width: 80px;
+  display: block;
+  margin: 5px auto;
+}
