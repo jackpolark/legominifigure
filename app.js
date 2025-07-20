@@ -1,10 +1,11 @@
 const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 
+// Correct category IDs for each body part
 const CATEGORIES = {
-  hair: 63,
-  head: 60,
-  torso: 61,
-  legs: 59
+  hair: 63,   // Headgear
+  head: 60,   // Heads
+  torso: 61,  // Torsos
+  legs: 59    // Legs
 };
 
 const partsData = {
@@ -21,27 +22,31 @@ const selectedIndex = {
   legs: 0
 };
 
+// Fetch parts for a given category
 async function fetchPartsByCategory(categoryId, partType) {
   const url = `https://rebrickable.com/api/v3/lego/parts/?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
 
-    // Filter to only parts with images and typical size
-    const cleanParts = data.results.filter(p => p.part_img_url && !p.part_img_url.includes('blank') && p.name.length > 0);
+    // Only use parts with images
+    const partsWithImages = data.results.filter(part => part.part_img_url);
+    partsData[partType] = partsWithImages;
 
-    partsData[partType] = cleanParts;
+    // Display the first part by default
+    selectedIndex[partType] = 0;
     updatePartImage(partType);
-  } catch (error) {
-    console.error(`Failed to load ${partType} parts`, error);
+  } catch (err) {
+    console.error(`Error loading ${partType}:`, err);
   }
 }
 
 function updatePartImage(type) {
-  const view = document.getElementById(`${type}-view`);
   const part = partsData[type][selectedIndex[type]];
-  if (part && view) {
-    view.src = part.part_img_url;
+  if (part) {
+    document.getElementById(`${type}-view`).src = part.part_img_url;
+    const preview = document.getElementById(`preview-${type}`);
+    if (preview) preview.src = part.part_img_url;
   }
 }
 
@@ -58,8 +63,8 @@ function nextPart(type) {
 }
 
 function init() {
-  for (const [type, id] of Object.entries(CATEGORIES)) {
-    fetchPartsByCategory(id, type);
+  for (const [type, categoryId] of Object.entries(CATEGORIES)) {
+    fetchPartsByCategory(categoryId, type);
   }
 }
 
