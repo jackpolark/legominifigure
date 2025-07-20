@@ -98,5 +98,5 @@ function nextPart(type) {
 function init() {
   loadThemeParts();
 }
-
+console.log(`Loaded ${partsData[type].length} ${type} parts`);
 init();
