@@ -1,1 +1,58 @@
-<hl>Hello!</h1>
+const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
+const BASE_URL = "https://rebrickable.com/api/v3/lego/parts/";
+
+async function fetchPartsByCategory(categoryId, partType) {
+  const url = `${BASE_URL}?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
+  const response = await fetch(url);
+  const data = await response.json();
+  displayParts(data.results, partType);
+}
+
+
+function displayParts(parts, partType) {
+  const container = document.getElementById(`${partType}-selector`);
+  container.innerHTML = ""; // Clear previous
+
+  parts.forEach(part => {
+    const img = document.createElement("img");
+    img.src = part.part_img_url;
+    img.alt = part.name;
+    img.className = "part-img";
+    img.onclick = () => selectPart(partType, part.part_img_url);
+    container.appendChild(img);
+  });
+}
+
+
+const selectedParts = {
+  head: null,
+  hair: null,
+  torso: null,
+  legs: null
+};
+
+function selectPart(type, imgUrl) {
+  selectedParts[type] = imgUrl;
+  document.getElementById(`${type}-view`).src = imgUrl;
+}
+
+<h2>Build Your Minifigure</h2>
+
+<div id="customizer">
+  <img id="hair-view" class="part-view">
+  <img id="head-view" class="part-view">
+  <img id="torso-view" class="part-view">
+  <img id="legs-view" class="part-view">
+</div>
+
+<h3>Select Hair</h3>
+<div id="hair-selector" class="scroll-row"></div>
+
+<h3>Select Head</h3>
+<div id="head-selector" class="scroll-row"></div>
+
+<h3>Select Torso</h3>
+<div id="torso-selector" class="scroll-row"></div>
+
+<h3>Select Legs</h3>
+<div id="legs-selector" class="scroll-row"></div>
