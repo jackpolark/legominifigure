@@ -1,11 +1,29 @@
-.part-view {
-  width: 80px;
-  height: auto;
-  display: inline-block;
-  vertical-align: middle;
-  margin: 0 10px;
+body {
+  font-family: Arial, sans-serif;
+  text-align: center;
+  margin: 20px;
+  background-color: #f4f4f4;
 }
 
+h2 {
+  margin-bottom: 30px;
+}
+
+#customizer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 40px;
+}
+
+/* Preview figure */
+.preview-part {
+  width: 80px;
+  height: auto;
+  margin: 2px 0;
+}
+
+/* Carousel layout */
 .carousel {
   display: flex;
   align-items: center;
@@ -13,25 +31,31 @@
   margin-bottom: 20px;
 }
 
-.carousel button {
-  padding: 10px;
-  font-size: 20px;
-  cursor: pointer;
-}
-
-
-.part-img {
-  width: 60px;
-  cursor: pointer;
+/* Carousel image */
+.carousel-part {
+  width: 80px;
+  height: auto;
+  margin: 0 10px;
   border-radius: 4px;
   transition: transform 0.2s;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
 }
-.part-img:hover {
+
+.carousel-part:hover {
   transform: scale(1.1);
 }
 
-.part-view {
-  width: 80px;
-  display: block;
-  margin: 5px auto;
+/* Carousel buttons */
+.carousel button {
+  padding: 10px 14px;
+  font-size: 18px;
+  border: none;
+  background-color: #ddd;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.carousel button:hover {
+  background-color: #bbb;
 }
