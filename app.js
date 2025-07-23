@@ -36,9 +36,7 @@ async function fetchPartsFromMinifig(minifigNum) {
   const res = await fetch(url);
   const data = await res.json();
   return data.results.filter(p =>
-    p.part &&
-    p.part.part_img_url &&
-    Object.values(CATEGORIES).includes(p.part.part_cat_id)
+    p.part.element_img_url && Object.values(CATEGORIES).includes(p.part.part_cat_id)
   );
 }
 
@@ -82,6 +80,7 @@ function updatePartImage(type) {
   const part = partsData[type][selectedIndex[type]];
   if (part) {
     document.getElementById(`${type}-view`).src = part.part_img_url;
+    const url = part.element_img_url || part.part_img_url;
     const preview = document.getElementById(`preview-${type}`);
     if (preview) preview.src = part.part_img_url;
   }
