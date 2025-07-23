@@ -1,11 +1,11 @@
 const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
-const THEME_ID = 18; // Star Wars
 
+// Correct category IDs for each body part
 const CATEGORIES = {
-  hair: 63,   // Minifig Headgear
-  head: 60,   // Minifig Heads
-  torso: 61,  // Minifig Torso Assembly
-  legs: 59    // Minifig Lower Body
+  hair: 63,   // Headgear
+  head: 60,   // Heads
+  torso: 61,  // Torsos
+  legs: 59    // Legs
 };
 
 const partsData = {
@@ -22,62 +22,25 @@ const selectedIndex = {
   legs: 0
 };
 
-// ✅ Get minifigs under the Star Wars theme
-async function fetchStarWarsMinifigs() {
-  const url = `https://rebrickable.com/api/v3/lego/minifigs/?in_theme_id=${THEME_ID}&page_size=100&key=${API_KEY}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  return data.results.map(fig => fig.set_num); // like sw001
-}
+// Fetch parts for a given category
+async function fetchPartsByCategory(categoryId, partType) {
+  const url = `https://rebrickable.com/api/v3/lego/parts/?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
 
-// ✅ Get the parts that make up each minifig
-async function fetchPartsFromMinifig(minifigNum) {
-  const url = `https://rebrickable.com/api/v3/lego/minifigs/${minifigNum}/parts/?page_size=1000&key=${API_KEY}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  return data.results.filter(p =>
-    p.part &&
-    p.part.part_img_url &&
-    Object.values(CATEGORIES).includes(p.part.part_cat_id)
-  );
-}
+    // Only use parts with images
+    const partsWithImages = data.results.filter(part => part.part_img_url);
+    partsData[partType] = partsWithImages;
 
-// ✅ Main loader
-async function loadThemeParts() {
-  const minifigNums = await fetchStarWarsMinifigs();
-
-  const categoryParts = {
-    hair: [],
-    head: [],
-    torso: [],
-    legs: []
-  };
-
-  for (const minifigNum of minifigNums) {
-    const parts = await fetchPartsFromMinifig(minifigNum);
-
-    for (const p of parts) {
-      const cat = p.part.part_cat_id;
-      const img = p.part.part_img_url;
-      const part = p.part;
-
-      if (!img) continue;
-
-      if (cat === CATEGORIES.hair) categoryParts.hair.push(part);
-      else if (cat === CATEGORIES.head) categoryParts.head.push(part);
-      else if (cat === CATEGORIES.torso) categoryParts.torso.push(part);
-      else if (cat === CATEGORIES.legs) categoryParts.legs.push(part);
-    }
-  }
-
-  for (const type of Object.keys(categoryParts)) {
-    partsData[type] = categoryParts[type];
-    selectedIndex[type] = 0;
-    updatePartImage(type);
+    // Display the first part by default
+    selectedIndex[partType] = 0;
+    updatePartImage(partType);
+  } catch (err) {
+    console.error(`Error loading ${partType}:`, err);
   }
 }
 
-// ✅ UI rendering
 function updatePartImage(type) {
   const part = partsData[type][selectedIndex[type]];
   if (part) {
@@ -100,7 +63,9 @@ function nextPart(type) {
 }
 
 function init() {
-  loadThemeParts();
+  for (const [type, categoryId] of Object.entries(CATEGORIES)) {
+    fetchPartsByCategory(categoryId, type);
+  }
 }
 
 init();
