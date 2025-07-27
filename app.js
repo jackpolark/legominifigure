@@ -2,17 +2,25 @@ const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 
 // Correct category IDs for each body part
 const CATEGORIES = {
-  hair: 63,   // Headgear
-  head: 60,   // Heads
-  torso: 61,  // Torsos
-  legs: 59    // Legs
+  hair: 63,   // Minifig Headgear
+  head: 60,   // Minifig Heads
+  torso: 61,  // Minifig Torso Assembly
+  legs: 59    // Minifig Lower Body
 };
 
+// Store current data and page index
 const partsData = {
   hair: [],
   head: [],
   torso: [],
   legs: []
+};
+
+const currentPage = {
+  hair: 1,
+  head: 1,
+  torso: 1,
+  legs: 1
 };
 
 const selectedIndex = {
@@ -22,49 +30,49 @@ const selectedIndex = {
   legs: 0
 };
 
-// Fetch parts for a given category
-async function fetchPartsByCategory(categoryId, partType) {
-  const url = `https://rebrickable.com/api/v3/lego/parts/?category_id=${categoryId}&page_size=100&key=${API_KEY}`;
+// Fetch a single part for a given category (by page)
+async function fetchSinglePartByCategory(partCatId, partType, page = 1) {
+  const url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${partCatId}&page=${page}&page_size=1&key=${API_KEY}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
 
-    // Only use parts with images
-    const partsWithImages = data.results.filter(part => part.part_img_url);
-    partsData[partType] = partsWithImages;
-
-    // Display the first part by default
-    selectedIndex[partType] = 0;
-    updatePartImage(partType);
+    if (data.results.length > 0) {
+      const part = data.results[0];
+      if (part.part_img_url) {
+        partsData[partType] = [part]; // Keep only the single fetched part
+        selectedIndex[partType] = 0;
+        updatePartImage(partType);
+      } else {
+        // If no image, skip to next page
+        currentPage[partType]++;
+        fetchSinglePartByCategory(partCatId, partType, currentPage[partType]);
+      }
+    }
   } catch (err) {
-    console.error(`Error loading ${partType}:`, err);
+    console.error(`Failed to fetch ${partType} part:`, err);
   }
 }
 
-function updatePartImage(type) {
-  const part = partsData[type][selectedIndex[type]];
-  if (part) {
-    document.getElementById(`${type}-view`).src = part.part_img_url;
-    const preview = document.getElementById(`preview-${type}`);
-    if (preview) preview.src = part.part_img_url;
+// Go to next part
+function nextPart(partType) {
+  currentPage[partType]++;
+  fetchSinglePartByCategory(CATEGORIES[partType], partType, currentPage[partType]);
+}
+
+// Display function
+function updatePartImage(partType) {
+  const part = partsData[partType][selectedIndex[partType]];
+  const imgElement = document.getElementById(`${partType}-image`);
+  if (imgElement && part) {
+    imgElement.src = part.part_img_url;
   }
 }
 
-function prevPart(type) {
-  if (partsData[type].length === 0) return;
-  selectedIndex[type] = (selectedIndex[type] - 1 + partsData[type].length) % partsData[type].length;
-  updatePartImage(type);
-}
-
-function nextPart(type) {
-  if (partsData[type].length === 0) return;
-  selectedIndex[type] = (selectedIndex[type] + 1) % partsData[type].length;
-  updatePartImage(type);
-}
-
+// Initialize (fetch first part for each category)
 function init() {
-  for (const [type, categoryId] of Object.entries(CATEGORIES)) {
-    fetchPartsByCategory(categoryId, type);
+  for (const [type, partCatId] of Object.entries(CATEGORIES)) {
+    fetchSinglePartByCategory(partCatId, type);
   }
 }
 
