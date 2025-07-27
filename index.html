@@ -4,23 +4,90 @@
   <meta charset="UTF-8">
   <title>Lego Minifigure Customizer</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    /* Optional inline CSS if style.css fails */
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 20px;
+      background-color: #f4f4f4;
+    }
+
+    h2 {
+      margin-bottom: 30px;
+    }
+
+    #customizer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 40px;
+    }
+
+    .preview-part {
+      width: 80px;
+      height: auto;
+      margin: 2px 0;
+    }
+
+    .carousel {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 10px;
+    }
+
+    .carousel-part {
+      width: 80px;
+      height: auto;
+      margin: 0 10px;
+      border-radius: 4px;
+      transition: transform 0.2s;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+    }
+
+    .carousel-part:hover {
+      transform: scale(1.1);
+    }
+
+    .carousel button {
+      padding: 10px 14px;
+      font-size: 18px;
+      border: none;
+      background-color: #ddd;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+
+    .carousel button:hover {
+      background-color: #bbb;
+    }
+
+    .part-info {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 25px;
+    }
+  </style>
 </head>
 <body>
 
   <h2>Build Your Minifigure</h2>
 
+  <!-- Stacked preview -->
   <div id="customizer">
-    <img id="preview-hair" class="preview-part" src="">
-    <img id="preview-head" class="preview-part" src="">
-    <img id="preview-torso" class="preview-part" src="">
-    <img id="preview-legs" class="preview-part" src="">
+    <img id="preview-hair" class="preview-part" src="" alt="Hair Preview">
+    <img id="preview-head" class="preview-part" src="" alt="Head Preview">
+    <img id="preview-torso" class="preview-part" src="" alt="Torso Preview">
+    <img id="preview-legs" class="preview-part" src="" alt="Legs Preview">
   </div>
 
   <!-- Hair -->
   <h3>Select Hair</h3>
   <div class="carousel">
     <button onclick="prevPart('hair')">◀</button>
-    <img id="hair-view" class="carousel-part" src="">
+    <img id="hair-view" class="carousel-part" src="" alt="Hair Part">
     <button onclick="nextPart('hair')">▶</button>
   </div>
   <p id="hair-info" class="part-info"></p>
@@ -29,7 +96,7 @@
   <h3>Select Head</h3>
   <div class="carousel">
     <button onclick="prevPart('head')">◀</button>
-    <img id="head-view" class="carousel-part" src="">
+    <img id="head-view" class="carousel-part" src="" alt="Head Part">
     <button onclick="nextPart('head')">▶</button>
   </div>
   <p id="head-info" class="part-info"></p>
@@ -38,7 +105,7 @@
   <h3>Select Torso</h3>
   <div class="carousel">
     <button onclick="prevPart('torso')">◀</button>
-    <img id="torso-view" class="carousel-part" src="">
+    <img id="torso-view" class="carousel-part" src="" alt="Torso Part">
     <button onclick="nextPart('torso')">▶</button>
   </div>
   <p id="torso-info" class="part-info"></p>
@@ -47,11 +114,12 @@
   <h3>Select Legs</h3>
   <div class="carousel">
     <button onclick="prevPart('legs')">◀</button>
-    <img id="legs-view" class="carousel-part" src="">
+    <img id="legs-view" class="carousel-part" src="" alt="Legs Part">
     <button onclick="nextPart('legs')">▶</button>
   </div>
   <p id="legs-info" class="part-info"></p>
 
+  <!-- Script must come after all elements -->
   <script src="app.js" defer></script>
 </body>
 </html>
