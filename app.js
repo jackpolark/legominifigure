@@ -42,19 +42,21 @@ const rateLimit = (() => {
 
 async function apiFetch(url, tries = 0) {
   await rateLimit();
+  console.log(`🔄 Fetching URL: ${url}`);
   const res = await fetch(url, {
     headers: { Authorization: `key ${API_KEY}` }
   });
 
   if (res.status === 429) {
     const backoffMs = Math.min(5000, 500 * (tries + 1));
-    console.warn(`429 throttled, retrying in ${backoffMs}ms...`);
+    console.warn(`🚫 429 Too Many Requests. Retrying in ${backoffMs}ms...`);
     await new Promise(r => setTimeout(r, backoffMs));
     return apiFetch(url, tries + 1);
   }
 
   if (!res.ok) {
     const text = await res.text();
+    console.error(`❌ HTTP Error: ${res.status} - ${text}`);
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
 
@@ -64,41 +66,57 @@ async function apiFetch(url, tries = 0) {
 async function loadFirstPage(partType) {
   const partCatId = CATEGORIES[partType];
   const url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${partCatId}&page_size=${PAGE_SIZE}&inc_color_details=0`;
+  console.log(`📦 Loading first page for ${partType.toUpperCase()} (cat_id=${partCatId})`);
   await loadPage(partType, url);
 }
 
 async function loadPage(partType, url) {
   const data = await apiFetch(url);
+  const raw = data.results || [];
+  console.log(`📥 Received ${raw.length} parts for ${partType.toUpperCase()}`);
 
-  const withImages = (data.results || []).filter(p => {
+  // Show all raw part names and cat_ids
+  raw.forEach(p => {
+    console.log(`  🧩 ${p.part_num} | ${p.name} | cat_id: ${p.part_cat_id}`);
+  });
+
+  const withImages = raw.filter(p => {
     const nm = p.name.toLowerCase();
     if (!p.part_img_url) return false;
 
-    switch (partType) {
-      case 'hair':
-        return (nm.includes('hat') || nm.includes('helmet') || nm.includes('hair')) && !nm.includes('arm');
-      case 'head':
-        return nm.includes('head') && !nm.includes('arm');
-      case 'torso':
-        return (nm.includes('torso') || nm.includes('upper body')) && !nm.includes('leg');
-      case 'legs':
-        return nm.includes('leg') && !nm.includes('torso') && !nm.includes('arm');
-      default:
-        return false;
+    const isValid =
+      partType === 'hair'
+        ? (nm.includes('hat') || nm.includes('helmet') || nm.includes('hair')) && !nm.includes('arm')
+        : partType === 'head'
+        ? nm.includes('head') && !nm.includes('arm')
+        : partType === 'torso'
+        ? (nm.includes('torso') || nm.includes('upper body')) && !nm.includes('leg')
+        : partType === 'legs'
+        ? nm.includes('leg') && !nm.includes('torso') && !nm.includes('arm')
+        : false;
+
+    if (!isValid) {
+      console.log(`🚫 Filtered OUT [${partType}]: ${p.part_num} | ${p.name}`);
     }
+
+    return isValid;
   });
 
+  console.log(`✅ Filtered ${withImages.length}/${raw.length} for ${partType.toUpperCase()}`);
   partsCache[partType].push(...withImages);
   nextUrl[partType] = data.next;
 
   if (partsCache[partType].length && selectedIndex[partType] === 0) {
+    console.log(`🎯 Displaying first ${partType.toUpperCase()} part`);
     updatePartImage(partType);
+  } else if (partsCache[partType].length === 0) {
+    console.warn(`⚠️ No valid parts loaded for ${partType.toUpperCase()}`);
   }
 }
 
-
 async function ensureLoaded(partType, index) {
   while (index >= partsCache[partType].length && nextUrl[partType]) {
+    console.log(`🔄 Loading more for ${partType.toUpperCase()}...`);
     await loadPage(partType, nextUrl[partType]);
   }
 }
@@ -106,7 +124,6 @@ async function ensureLoaded(partType, index) {
 async function nextPart(partType) {
   const current = selectedIndex[partType] + 1;
   await ensureLoaded(partType, current);
-
   selectedIndex[partType] = current >= partsCache[partType].length ? 0 : current;
   updatePartImage(partType);
 }
@@ -121,32 +138,40 @@ async function prevPart(partType) {
 
 function updatePartImage(partType) {
   const part = partsCache[partType][selectedIndex[partType]];
-  if (!part) return;
+  if (!part) {
+    console.warn(`⚠️ No part to display for ${partType.toUpperCase()} at index ${selectedIndex[partType]}`);
+    return;
+  }
+
+  console.log(`🖼️ Updating ${partType.toUpperCase()} preview: ${part.part_num} | ${part.name}`);
 
   const previewImg = document.getElementById(`preview-${partType}`);
-  if (previewImg) previewImg.src = part.part_img_url;
+  if (previewImg) {
+    previewImg.src = part.part_img_url;
+  }
 
   const carouselImg = document.getElementById(`${partType}-view`);
-  if (carouselImg) carouselImg.src = part.part_img_url;
+  if (carouselImg) {
+    carouselImg.src = part.part_img_url;
+  }
 
   const infoEl = document.getElementById(`${partType}-info`);
   if (infoEl) {
     infoEl.textContent = `ID: ${part.part_num} | ${part.name} | cat_id: ${part.part_cat_id || "?"}`;
   }
-
-  console.log(`[${partType.toUpperCase()}] ${part.part_num}: ${part.name} (cat_id: ${part.part_cat_id})`);
 }
 
 async function init() {
   const orderedKeys = ['hair', 'head', 'torso', 'legs'];
+  console.log(`🚀 Starting initialization...`);
   for (const partType of orderedKeys) {
     await loadFirstPage(partType);
   }
+  console.log(`✅ Initialization complete.`);
 }
-
 
 window.nextPart = nextPart;
 window.prevPart = prevPart;
 window.init = init;
 
-init().catch(console.error);
+init().catch(err => console.error(`💥 Init error: ${err.message}`));
