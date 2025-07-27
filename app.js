@@ -111,13 +111,21 @@ function updatePartImage(partType) {
   // Update the carousel view image
   const carouselImg = document.getElementById(`${partType}-view`);
   if (carouselImg) carouselImg.src = part.part_img_url;
+
+  // Update part info below carousel
+  const infoEl = document.getElementById(`${partType}-info`);
+  if (infoEl) {
+    infoEl.textContent = `ID: ${part.part_num} | ${part.name}`;
+  }
+
+  // Console debug
+  console.log(`[${partType.toUpperCase()}] ${part.part_num}: ${part.name}`);
 }
 
 async function init() {
   await Promise.all(Object.keys(CATEGORIES).map(loadFirstPage));
 }
 
-// Make functions available to buttons
 window.nextPart = nextPart;
 window.prevPart = prevPart;
 window.init = init;
