@@ -2,11 +2,12 @@ const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 const PAGE_SIZE = 50;
 
 const CATEGORIES = {
-  hair: 65,
-  head: 60,
-  torso: 61,
-  legs: 62
+  hair: 60,
+  head: 61,
+  torso: 62,
+  legs: 65
 };
+
 
 const selectedIndex = {
   hair: 0,
