@@ -5,7 +5,6 @@
   <title>Lego Minifigure Customizer</title>
   <link rel="stylesheet" href="style.css">
   <style>
-    /* Optional inline CSS if style.css fails */
     body {
       font-family: Arial, sans-serif;
       text-align: center;
@@ -67,7 +66,20 @@
     .part-info {
       font-size: 13px;
       color: #555;
-      margin-bottom: 25px;
+      margin-bottom: 8px;
+    }
+
+    .debug-info {
+      font-size: 11px;
+      color: #999;
+      margin-bottom: 20px;
+      white-space: pre-wrap;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #ccc;
+      margin: 20px 0;
     }
   </style>
 </head>
@@ -91,6 +103,8 @@
     <button onclick="nextPart('hair')">▶</button>
   </div>
   <p id="hair-info" class="part-info"></p>
+  <div id="hair-debug" class="debug-info"></div>
+  <hr>
 
   <!-- Head -->
   <h3>Select Head</h3>
@@ -100,6 +114,8 @@
     <button onclick="nextPart('head')">▶</button>
   </div>
   <p id="head-info" class="part-info"></p>
+  <div id="head-debug" class="debug-info"></div>
+  <hr>
 
   <!-- Torso -->
   <h3>Select Torso</h3>
@@ -109,6 +125,8 @@
     <button onclick="nextPart('torso')">▶</button>
   </div>
   <p id="torso-info" class="part-info"></p>
+  <div id="torso-debug" class="debug-info"></div>
+  <hr>
 
   <!-- Legs -->
   <h3>Select Legs</h3>
@@ -118,8 +136,8 @@
     <button onclick="nextPart('legs')">▶</button>
   </div>
   <p id="legs-info" class="part-info"></p>
+  <div id="legs-debug" class="debug-info"></div>
 
-  <!-- Script must come after all elements -->
   <script src="app.js" defer></script>
 </body>
 </html>
