@@ -138,8 +138,12 @@ function updatePartImage(partType) {
 }
 
 async function init() {
-  await Promise.all(Object.keys(CATEGORIES).map(loadFirstPage));
+  const orderedKeys = ['hair', 'head', 'torso', 'legs'];
+  for (const partType of orderedKeys) {
+    await loadFirstPage(partType);
+  }
 }
+
 
 window.nextPart = nextPart;
 window.prevPart = prevPart;
