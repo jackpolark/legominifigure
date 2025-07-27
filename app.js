@@ -2,10 +2,10 @@ const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 const PAGE_SIZE = 50;
 
 const CATEGORIES = {
-  hair: 63,
-  head: 60,
-  torso: 61,
-  legs: 59
+  hair: 65,   // ✅ Minifig Headwear
+  head: 60,   // ✅ Minifig Heads
+  torso: 61,  // ✅ Minifig Upper Body
+  legs: 62    // ✅ Minifig Lower Body
 };
 
 const selectedIndex = {
@@ -104,21 +104,17 @@ function updatePartImage(partType) {
   const part = partsCache[partType][selectedIndex[partType]];
   if (!part) return;
 
-  // Update main preview stack
   const previewImg = document.getElementById(`preview-${partType}`);
   if (previewImg) previewImg.src = part.part_img_url;
 
-  // Update the carousel view image
   const carouselImg = document.getElementById(`${partType}-view`);
   if (carouselImg) carouselImg.src = part.part_img_url;
 
-  // Update part info below carousel
   const infoEl = document.getElementById(`${partType}-info`);
   if (infoEl) {
     infoEl.textContent = `ID: ${part.part_num} | ${part.name}`;
   }
 
-  // Console debug
   console.log(`[${partType.toUpperCase()}] ${part.part_num}: ${part.name}`);
 }
 
