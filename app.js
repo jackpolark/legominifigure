@@ -4,7 +4,7 @@ const PAGE_SIZE = 50;
 const CATEGORIES = {
   hair: 65,   // ✅ Minifig Headwear
   head: 60,   // ✅ Minifig Heads
-  torso: 61,  // ✅ Minifig Upper Body
+  torso: 61,  // ✅ Minifig Torso Assembly
   legs: 62    // ✅ Minifig Lower Body
 };
 
@@ -69,7 +69,16 @@ async function loadFirstPage(partType) {
 
 async function loadPage(partType, url) {
   const data = await apiFetch(url);
-  const withImages = (data.results || []).filter(p => p.part_img_url);
+
+  const withImages = (data.results || []).filter(p =>
+    p.part_img_url &&
+    !p.name.toLowerCase().includes("minidoll") &&
+    !p.name.toLowerCase().includes("mechanical") &&
+    !p.name.toLowerCase().includes("feet") &&
+    !p.name.toLowerCase().includes("dress") &&
+    !p.name.toLowerCase().includes("duplo")
+  );
+
   partsCache[partType].push(...withImages);
   nextUrl[partType] = data.next;
 
@@ -112,10 +121,10 @@ function updatePartImage(partType) {
 
   const infoEl = document.getElementById(`${partType}-info`);
   if (infoEl) {
-    infoEl.textContent = `ID: ${part.part_num} | ${part.name}`;
+    infoEl.textContent = `ID: ${part.part_num} | ${part.name} | cat_id: ${part.part_cat_id || "?"}`;
   }
 
-  console.log(`[${partType.toUpperCase()}] ${part.part_num}: ${part.name}`);
+  console.log(`[${partType.toUpperCase()}] ${part.part_num}: ${part.name} (cat_id: ${part.part_cat_id})`);
 }
 
 async function init() {
