@@ -70,14 +70,23 @@ async function loadFirstPage(partType) {
 async function loadPage(partType, url) {
   const data = await apiFetch(url);
 
-  const withImages = (data.results || []).filter(p =>
-    p.part_img_url &&
-    !p.name.toLowerCase().includes("minidoll") &&
-    !p.name.toLowerCase().includes("mechanical") &&
-    !p.name.toLowerCase().includes("feet") &&
-    !p.name.toLowerCase().includes("dress") &&
-    !p.name.toLowerCase().includes("duplo")
-  );
+  const withImages = (data.results || []).filter(p => {
+    const nm = p.name.toLowerCase();
+    if (!p.part_img_url) return false;
+
+    switch (partType) {
+      case 'hair':
+        return (nm.includes('hat') || nm.includes('helmet') || nm.includes('hair')) && !nm.includes('arm');
+      case 'head':
+        return nm.includes('head') && !nm.includes('arm');
+      case 'torso':
+        return (nm.includes('torso') || nm.includes('upper body')) && !nm.includes('leg');
+      case 'legs':
+        return nm.includes('leg') && !nm.includes('torso') && !nm.includes('arm');
+      default:
+        return false;
+    }
+  });
 
   partsCache[partType].push(...withImages);
   nextUrl[partType] = data.next;
@@ -86,6 +95,7 @@ async function loadPage(partType, url) {
     updatePartImage(partType);
   }
 }
+
 
 async function ensureLoaded(partType, index) {
   while (index >= partsCache[partType].length && nextUrl[partType]) {
