@@ -2,10 +2,10 @@ const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 const PAGE_SIZE = 50;
 
 const CATEGORIES = {
-  hair: 65,   // ✅ Minifig Headwear
-  head: 60,   // ✅ Minifig Heads
-  torso: 61,  // ✅ Minifig Torso Assembly
-  legs: 62    // ✅ Minifig Lower Body
+  hair: 65,
+  head: 60,
+  torso: 61,
+  legs: 62
 };
 
 const selectedIndex = {
@@ -40,6 +40,14 @@ const rateLimit = (() => {
   };
 })();
 
+function logDebug(partType, message) {
+  const debugEl = document.getElementById(`${partType}-debug`);
+  if (debugEl) {
+    debugEl.textContent += message + "\n";
+  }
+  console.log(message);
+}
+
 async function apiFetch(url, tries = 0) {
   await rateLimit();
   console.log(`🔄 Fetching URL: ${url}`);
@@ -66,18 +74,17 @@ async function apiFetch(url, tries = 0) {
 async function loadFirstPage(partType) {
   const partCatId = CATEGORIES[partType];
   const url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${partCatId}&page_size=${PAGE_SIZE}&inc_color_details=0`;
-  console.log(`📦 Loading first page for ${partType.toUpperCase()} (cat_id=${partCatId})`);
+  logDebug(partType, `📦 Loading first page (cat_id=${partCatId})`);
   await loadPage(partType, url);
 }
 
 async function loadPage(partType, url) {
   const data = await apiFetch(url);
   const raw = data.results || [];
-  console.log(`📥 Received ${raw.length} parts for ${partType.toUpperCase()}`);
+  logDebug(partType, `📥 Received ${raw.length} parts`);
 
-  // Show all raw part names and cat_ids
   raw.forEach(p => {
-    console.log(`  🧩 ${p.part_num} | ${p.name} | cat_id: ${p.part_cat_id}`);
+    logDebug(partType, `  🧩 ${p.part_num} | ${p.name} | cat_id: ${p.part_cat_id}`);
   });
 
   const withImages = raw.filter(p => {
@@ -96,27 +103,27 @@ async function loadPage(partType, url) {
         : false;
 
     if (!isValid) {
-      console.log(`🚫 Filtered OUT [${partType}]: ${p.part_num} | ${p.name}`);
+      logDebug(partType, `🚫 Filtered OUT: ${p.part_num} | ${p.name}`);
     }
 
     return isValid;
   });
 
-  console.log(`✅ Filtered ${withImages.length}/${raw.length} for ${partType.toUpperCase()}`);
+  logDebug(partType, `✅ Filtered ${withImages.length}/${raw.length} valid images`);
   partsCache[partType].push(...withImages);
   nextUrl[partType] = data.next;
 
   if (partsCache[partType].length && selectedIndex[partType] === 0) {
-    console.log(`🎯 Displaying first ${partType.toUpperCase()} part`);
+    logDebug(partType, `🎯 Displaying first part`);
     updatePartImage(partType);
   } else if (partsCache[partType].length === 0) {
-    console.warn(`⚠️ No valid parts loaded for ${partType.toUpperCase()}`);
+    logDebug(partType, `⚠️ No valid parts loaded`);
   }
 }
 
 async function ensureLoaded(partType, index) {
   while (index >= partsCache[partType].length && nextUrl[partType]) {
-    console.log(`🔄 Loading more for ${partType.toUpperCase()}...`);
+    logDebug(partType, `🔄 Loading more parts...`);
     await loadPage(partType, nextUrl[partType]);
   }
 }
@@ -139,21 +146,17 @@ async function prevPart(partType) {
 function updatePartImage(partType) {
   const part = partsCache[partType][selectedIndex[partType]];
   if (!part) {
-    console.warn(`⚠️ No part to display for ${partType.toUpperCase()} at index ${selectedIndex[partType]}`);
+    logDebug(partType, `⚠️ No part at index ${selectedIndex[partType]}`);
     return;
   }
 
-  console.log(`🖼️ Updating ${partType.toUpperCase()} preview: ${part.part_num} | ${part.name}`);
+  logDebug(partType, `🖼️ Displaying: ${part.part_num} | ${part.name}`);
 
   const previewImg = document.getElementById(`preview-${partType}`);
-  if (previewImg) {
-    previewImg.src = part.part_img_url;
-  }
+  if (previewImg) previewImg.src = part.part_img_url;
 
   const carouselImg = document.getElementById(`${partType}-view`);
-  if (carouselImg) {
-    carouselImg.src = part.part_img_url;
-  }
+  if (carouselImg) carouselImg.src = part.part_img_url;
 
   const infoEl = document.getElementById(`${partType}-info`);
   if (infoEl) {
