@@ -178,31 +178,57 @@ async function getLDrawId(partNum) {
 }
 
 async function generateRenderFile() {
-  const parts = ['hair', 'head', 'torso', 'legs'];
-  const positions = { hair: 50, head: 24, torso: 0, legs: -20 }; // Y positions
-  const ldrawLines = ["0 Custom Minifigure Render"];
+  const parts = ['legs', 'torso', 'head', 'hair']; // bottom to top order for stacking
+  const positions = {
+    legs: 0,
+    torso: 24,   // 1 brick = 24 LDU
+    head: 48,
+    hair: 72
+  };
+
+  const ioFile = {
+    "stud.io": {
+      "version": "1.0.0",
+      "authoringTool": "Lego Minifig Customizer App",
+      "defaultUnit": "LDU",
+      "grid": {
+        "spacing": 1.0,
+        "snap": true
+      },
+      "parts": []
+    }
+  };
 
   for (const partType of parts) {
     const part = partsCache[partType][selectedIndex[partType]];
     if (!part) continue;
 
-    const ldrawId = await getLDrawId(part.part_num);
-    if (!ldrawId) {
-      logDebug(partType, `⚠️ No LDraw ID found for ${part.part_num}`);
-      continue;
-    }
-
+    const partNum = part.part_num;
     const y = positions[partType];
-    ldrawLines.push(`1 16 0 ${y} 0 ${ldrawId}`);
-    logDebug(partType, `📄 Added to .ldr: ${ldrawId} at Y=${y}`);
+
+    // Add part entry
+    ioFile["stud.io"].parts.push({
+      "designID": partNum,
+      "material": "16", // 16 = default color
+      "decoration": null,
+      "transform": [
+        1, 0, 0, 0,
+        0, 1, 0, y,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ]
+    });
+
+    logDebug(partType, `📄 Added to .io: ${partNum} at Y=${y}`);
   }
 
-  const blob = new Blob([ldrawLines.join('\n')], { type: 'text/plain' });
+  const blob = new Blob([JSON.stringify(ioFile, null, 2)], { type: "application/json" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = "custom_minifigure.ldr";
+  link.download = "custom_minifigure.io";
   link.click();
 }
+
 
 window.generateRenderFile = generateRenderFile;
 
