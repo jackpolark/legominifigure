@@ -2,7 +2,7 @@ const API_KEY = "34e4c4ff2ec36a7a20f30f484a11f0af";
 const PAGE_SIZE = 50;
 
 const CATEGORIES = {
-  hair: 64,
+  hair: 59,
   head: 65,
   torso: 60,
   legs: 61
