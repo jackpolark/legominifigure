@@ -171,6 +171,45 @@ async function init() {
   console.log(`✅ Initialization complete.`);
 }
 
+async function getLDrawId(partNum) {
+  const url = `https://rebrickable.com/api/v3/lego/parts/${partNum}/`;
+  const data = await apiFetch(url);
+  return (data.external_ids?.LDraw || [])[0] || null;
+}
+
+async function generateRenderFile() {
+  const parts = ['hair', 'head', 'torso', 'legs'];
+  const positions = { hair: 50, head: 24, torso: 0, legs: -20 }; // Y positions
+  const ldrawLines = ["0 Custom Minifigure Render"];
+
+  for (const partType of parts) {
+    const part = partsCache[partType][selectedIndex[partType]];
+    if (!part) continue;
+
+    const ldrawId = await getLDrawId(part.part_num);
+    if (!ldrawId) {
+      logDebug(partType, `⚠️ No LDraw ID found for ${part.part_num}`);
+      continue;
+    }
+
+    const y = positions[partType];
+    ldrawLines.push(`1 16 0 ${y} 0 ${ldrawId}`);
+    logDebug(partType, `📄 Added to .ldr: ${ldrawId} at Y=${y}`);
+  }
+
+  const blob = new Blob([ldrawLines.join('\n')], { type: 'text/plain' });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "custom_minifigure.ldr";
+  link.click();
+}
+
+window.generateRenderFile = generateRenderFile;
+
+
+
+
+
 window.nextPart = nextPart;
 window.prevPart = prevPart;
 window.init = init;
