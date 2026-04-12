@@ -1,61 +1,36 @@
 /* ============================================================
-   LEGO MINIFIG BUILDER — Application Logic v3
+   LEGO MINIFIG BUILDER — Application Logic v4
    ============================================================
 
-   LOADING STRATEGY
-   ──────────────────────────────────────────────────────────
-   Three-layer approach to ensure full data is available:
+   KEY CHANGES IN v4
+   ──────────────────
+   1. ensureMinimumVisible()
+      After each initial category fetch, we immediately top-up
+      with extra pages until ≥20 parts match the active subcategory.
+      This eliminates the "0 parts" flash when the default tab is
+      a strict subset (e.g. head="Standard" needs 3626* parts which
+      might not all be on page 1).
 
-   1. INITIAL LOAD (fast, blocking)
-      - Fetches first page at PAGE_SIZE = 100 per category
-      - Applies default subcategory filter immediately on arrival
-      - UI is interactive after ~4 seconds (4 sequential calls × 1s rate limit)
+   2. Searchable theme combo
+      Replaces the <select> with a custom input+dropdown combo:
+      • Unfocused: shows placeholder "🎨 Filter by theme…"
+      • On focus with empty query: shows ~30 current/popular themes
+      • Typing: searches ALL themes (incl. retired) by name
+      • Selection triggers theme loading chain as before
 
-   2. BACKGROUND EAGER LOADING (automatic, non-blocking)
-      - After initial render, continues fetching remaining pages silently
-      - Renders incrementally as pages arrive; strip updates in-place
-      - Stops if user triggers a search (avoids stale results)
-      - Progress shown via count label: "240 / 1000+ parts"
-
-   3. LOCALSTORAGE CACHE (12-hour TTL)
-      - Full part lists saved after background load completes
-      - On next visit, cache is restored instantly (no API calls needed)
-      - Theme part lists are also cached by themeId+catId key
-      - Cache version-stamped so stale schemas auto-invalidate
-
-   THEME LOADING CHAIN
-   ──────────────────────────────────────────────────────────
-   Themes are not a native filter in the /parts/ API. We resolve them
-   by following: theme → recent sets → set parts → filter by cat_id.
-
-   Steps (per-slot, on demand):
-     1. GET /api/v3/lego/themes/?page_size=1000  (once, cached)
-     2. GET /api/v3/lego/sets/?theme_id=X&page_size=20&ordering=-year
-     3. For each set: GET /api/v3/lego/sets/{set_num}/parts/?page_size=500
-     4. Filter results to the slot's part_cat_id client-side
-     5. Deduplicate by part_num, annotate, display
-   Results cached per (themeId, catId) with 12h TTL.
-
-   PARSING MODEL
-   ──────────────────────────────────────────────────────────
-   part._n = parsePartNum(part_num)
-     { baseId, variantType, variantSuffix }
-
-   part._p = parseName(name)
-     { primary, fusion[], descriptors[], features[], decoration }
-
-   SUBCATEGORY DEFAULTS
-   ──────────────────────────────────────────────────────────
-   hair  → "All"      (full variety by default)
-   head  → "Standard" (3626-prefix, connects to any standard torso)
-   torso → "Standard" (973-prefix, connects to any standard head/legs)
-   legs  → "Legs"     (Hips and Legs, the most common piece)
+   3. Collapsible variant chips
+      Renders first 10 chips. If >10 siblings exist, shows a
+      "••• N more" expand button. Expanded state shows all chips
+      plus a "collapse" button.
    ============================================================ */
 
 // ──── Config ──────────────────────────────────────────────────────────────────
-const API_KEY   = "34e4c4ff2ec36a7a20f30f484a11f0af";
-const PAGE_SIZE = 100;  // Max practical; Rebrickable allows up to 1000
-const THEME_MAX_SETS = 20; // Sets to scan per theme (more = slower, more results)
+const API_KEY       = "34e4c4ff2ec36a7a20f30f484a11f0af";
+const PAGE_SIZE     = 100;
+const THEME_MAX_SETS = 20;
+const VARIANT_SHOW  = 10;   // chips shown before "show more"
+const MIN_VISIBLE   = 20;   // minimum parts per slot before background kicks in
+const MIN_EXTRA_PAGES = 8;  // max extra pages to fetch for minimum-visible guarantee
 
 const PART_TYPES = [
   { key: "hair",  catId: 65, label: "Headwear", icon: "👒" },
@@ -100,17 +75,31 @@ const SUBCATEGORIES = {
   ],
 };
 
+// Known current/popular themes by name — shown in the combo default list.
+// Search will also include every theme returned by the API (incl. retired).
+const CURRENT_THEME_NAMES = new Set([
+  "Animal Crossing", "Architecture", "Art", "Avatar", "Batman",
+  "Botanical Collection", "City", "Classic", "Creator 3 in 1",
+  "DC Comics Super Heroes", "Disney", "Dots", "Dreamzzz", "Duplo",
+  "Friends", "Harry Potter", "Icons", "Ideas", "Jurassic World",
+  "Marvel Super Heroes", "Minecraft", "Minions", "Monkie Kid",
+  "Ninjago", "Speed Champions", "Star Wars", "Super Mario",
+  "Technic", "The Lord of the Rings", "Trolls",
+]);
+
 
 // ──── LocalStorage Cache ──────────────────────────────────────────────────────
-const CACHE_VERSION = 3;
-const CACHE_TTL     = 12 * 60 * 60 * 1000; // 12 hours
+const CACHE_VERSION = 4;
+const CACHE_TTL     = 12 * 60 * 60 * 1000;
 
 function cacheGet(key) {
   try {
     const raw = localStorage.getItem(`lmb_${key}`);
     if (!raw) return null;
     const { v, t, d } = JSON.parse(raw);
-    if (v !== CACHE_VERSION || Date.now() - t > CACHE_TTL) { localStorage.removeItem(`lmb_${key}`); return null; }
+    if (v !== CACHE_VERSION || Date.now() - t > CACHE_TTL) {
+      localStorage.removeItem(`lmb_${key}`); return null;
+    }
     return d;
   } catch { return null; }
 }
@@ -119,7 +108,6 @@ function cacheSet(key, data) {
   try {
     localStorage.setItem(`lmb_${key}`, JSON.stringify({ v: CACHE_VERSION, t: Date.now(), d: data }));
   } catch {
-    // Quota exceeded — clear all our cached entries and retry once
     for (const k of Object.keys(localStorage)) { if (k.startsWith("lmb_")) localStorage.removeItem(k); }
     try { localStorage.setItem(`lmb_${key}`, JSON.stringify({ v: CACHE_VERSION, t: Date.now(), d: data })); } catch {}
   }
@@ -131,8 +119,8 @@ function parsePartNum(num) {
   const m = num.match(/^(.+?)(pr\d+|pat\d+|c\d+)$/i);
   if (!m) return { baseId: num, variantType: null, variantSuffix: null };
   return {
-    baseId:        m[1],
-    variantType:   m[2].match(/^(pr|pat|c)/i)?.[1]?.toLowerCase() ?? null,
+    baseId: m[1],
+    variantType: m[2].match(/^(pr|pat|c)/i)?.[1]?.toLowerCase() ?? null,
     variantSuffix: m[2],
   };
 }
@@ -140,29 +128,26 @@ function parsePartNum(num) {
 function parseName(rawName) {
   let s = rawName.trim();
   let decoration = null;
-
-  if (/\[plain\]$/i.test(s))    { decoration = "Plain";   s = s.replace(/\s*\[plain\]$/i,  "").trim(); }
-  else if (/ prints?$/i.test(s)){ decoration = "Print";   s = s.replace(/ prints?$/i,      "").trim(); }
-  else if (/ patterns?$/i.test(s)){ decoration = "Pattern"; s = s.replace(/ patterns?$/i,  "").trim(); }
+  if (/\[plain\]$/i.test(s))     { decoration = "Plain";   s = s.replace(/\s*\[plain\]$/i, "").trim(); }
+  else if (/ prints?$/i.test(s)) { decoration = "Print";   s = s.replace(/ prints?$/i, "").trim(); }
+  else if (/ patterns?$/i.test(s)){ decoration = "Pattern"; s = s.replace(/ patterns?$/i, "").trim(); }
 
   const withIdx = s.toLowerCase().indexOf(" with ");
   const baseDesc = withIdx !== -1 ? s.slice(0, withIdx).trim() : s;
   const featStr  = withIdx !== -1 ? s.slice(withIdx + 6).trim() : "";
-
-  const tokens      = baseDesc.split(/,\s*/);
-  let primaryRaw    = tokens[0].trim().replace(/^Minifig\s+/i, "");
+  const tokens   = baseDesc.split(/,\s*/);
+  let primaryRaw = tokens[0].trim().replace(/^Minifig\s+/i, "");
   const descriptors = tokens.slice(1).map(t => t.trim()).filter(Boolean);
 
   let primaryType, fusion = [];
   const andM   = primaryRaw.match(/^(.+?)\s+and\s+(.+)$/i);
   const slashM = primaryRaw.match(/^(.+?)\s*\/\s*(.+)$/);
-  if (andM)         { primaryType = andM[1].trim();   fusion = [andM[2].trim()]; }
-  else if (slashM)  { primaryType = slashM[1].trim(); fusion = [slashM[2].trim()]; }
+  if (andM)        { primaryType = andM[1].trim();   fusion = [andM[2].trim()]; }
+  else if (slashM) { primaryType = slashM[1].trim(); fusion = [slashM[2].trim()]; }
   else {
     const multi = MULTIWORD_PRIMARIES.find(t => primaryRaw.toLowerCase().startsWith(t.toLowerCase()));
     primaryType = multi ?? primaryRaw.split(/\s+/)[0];
   }
-
   return { primary: primaryType, fusion, descriptors, features: featStr ? featStr.split(/,\s*/) : [], decoration };
 }
 
@@ -187,30 +172,32 @@ function isStandardPart(partKey, part) {
 
 // ──── State ───────────────────────────────────────────────────────────────────
 const state = {
-  parts:        { hair: [], head: [], torso: [], legs: [] },
-  groups:       { hair: {}, head: {}, torso: {}, legs: {} },
-  selected:     { hair: null, head: null, torso: null, legs: null },
-  nextUrl:      { hair: null, head: null, torso: null, legs: null },
-  loading:      { hair: false, head: false, torso: false, legs: false },
-  bgLoading:    { hair: false, head: false, torso: false, legs: false },
-  search:       { hair: "", head: "", torso: "", legs: "" },
+  parts:           { hair: [], head: [], torso: [], legs: [] },
+  groups:          { hair: {}, head: {}, torso: {}, legs: {} },
+  selected:        { hair: null, head: null, torso: null, legs: null },
+  nextUrl:         { hair: null, head: null, torso: null, legs: null },
+  loading:         { hair: false, head: false, torso: false, legs: false },
+  bgLoading:       { hair: false, head: false, torso: false, legs: false },
+  search:          { hair: "", head: "", torso: "", legs: "" },
+  subcat:          { hair: "All", head: "Standard", torso: "Standard", legs: "Legs" },
+  standardOnly:    false,
 
-  // Defaults: All / Standard / Standard / Legs
-  subcat:       { hair: "All", head: "Standard", torso: "Standard", legs: "Legs" },
-  standardOnly: false,
+  allThemes:       [],  // full list from API
+  themeId:         { hair: null, head: null, torso: null, legs: null },
+  themeParts:      { hair: {}, head: {}, torso: {}, legs: {} },
+  themeLoading:    { hair: false, head: false, torso: false, legs: false },
+  themeName:       { hair: "", head: "", torso: "", legs: "" },
 
-  // Theme state
-  allThemes:     [],       // all top-level themes from API
-  themeId:      { hair: null, head: null, torso: null, legs: null },
-  themeParts:   { hair: {}, head: {}, torso: {}, legs: {} },  // themeId → [parts]
-  themeLoading: { hair: false, head: false, torso: false, legs: false },
+  // Variant chip expand state per slot
+  variantExpanded: { hair: false, head: false, torso: false, legs: false },
 };
 
 const searchTimers = {};
+// Track which theme combo dropdown is open (partKey | null)
+let openComboKey = null;
 
 
 // ──── Rate Limiter ────────────────────────────────────────────────────────────
-// Queues all requests to fire at most once per 1100ms.
 const rateLimiter = (() => {
   let last = 0;
   return async () => {
@@ -225,7 +212,7 @@ async function apiFetch(url, retries = 0) {
   const res = await fetch(url, { headers: { Authorization: `key ${API_KEY}` } });
   if (res.status === 429) {
     const backoff = Math.min(8000, 1500 * (retries + 1));
-    console.warn(`⏳ Rate limited. Retrying in ${backoff}ms…`);
+    console.warn(`⏳ Rate limited – retrying in ${backoff}ms…`);
     await new Promise(r => setTimeout(r, backoff));
     return apiFetch(url, retries + 1);
   }
@@ -260,7 +247,6 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
     state.nextUrl[partKey] = data.next;
 
     if (!append) {
-      // Auto-select first visible part on fresh load
       const visible = getVisibleParts(partKey);
       state.selected[partKey] = visible[0] ?? null;
     }
@@ -269,13 +255,10 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
   } finally {
     state.loading[partKey] = false;
     renderSelector(partKey);
-    renderPreview();
-    renderSummary();
-    checkCompatibility();
+    renderPreview(); renderSummary(); checkCompatibility();
   }
 }
 
-// Rebuild baseId → [parts] groups map
 function rebuildGroups(partKey) {
   state.groups[partKey] = {};
   for (const p of state.parts[partKey]) {
@@ -286,161 +269,165 @@ function rebuildGroups(partKey) {
 }
 
 
+// ──── Ensure Minimum Visible ──────────────────────────────────────────────────
+// If the active subcategory filter yields fewer than MIN_VISIBLE parts and
+// more pages exist, keep fetching until we reach MIN_VISIBLE or run out.
+// Called right after each initial fetch so the UI never shows an empty slot.
+async function ensureMinimumVisible(partKey) {
+  if (state.search[partKey]) return;      // user is searching — don't interfere
+  if (state.themeId[partKey] !== null) return; // theme mode handles its own loading
+
+  let extra = 0;
+  while (
+    getVisibleParts(partKey).length < MIN_VISIBLE &&
+    state.nextUrl[partKey] &&
+    extra < MIN_EXTRA_PAGES
+  ) {
+    await fetchParts(partKey, "", true, state.nextUrl[partKey]);
+    extra++;
+  }
+}
+
+
 // ──── Background Eager Loading ────────────────────────────────────────────────
-// After the initial page renders, this silently loads remaining pages.
-// Stops if the user starts a search (would corrupt search results).
-// When complete, saves the full list to localStorage.
 async function startBackgroundLoad(partKey) {
   if (state.bgLoading[partKey]) return;
   state.bgLoading[partKey] = true;
-
   const type = PART_TYPES.find(t => t.key === partKey);
 
   try {
     while (state.nextUrl[partKey]) {
-      // Abort if user started a search — their fresh fetch will restart this
-      if (state.search[partKey]) break;
-
+      if (state.search[partKey]) break;   // abort if user is searching
       await fetchParts(partKey, "", true, state.nextUrl[partKey]);
     }
 
-    // Full load complete — cache to localStorage
+    // Cache full list once complete
     if (!state.search[partKey] && !state.nextUrl[partKey]) {
-      // Store only the fields we need (keep storage small)
       const toCache = state.parts[partKey].map(p => ({
         part_num: p.part_num, name: p.name,
         part_img_url: p.part_img_url, part_cat_id: p.part_cat_id,
       }));
       cacheSet(`parts_${type.catId}`, toCache);
-      updateCountLabel(partKey); // remove the "bg loading" indicator
     }
   } finally {
     state.bgLoading[partKey] = false;
+    renderCountLabel(partKey);
   }
 }
 
-function updateCountLabel(partKey) {
+function renderCountLabel(partKey) {
   const countEl = document.getElementById(`count-${partKey}`);
   if (!countEl) return;
-  const total    = state.parts[partKey].length;
+  const themeId  = state.themeId[partKey];
+  const allParts = themeId !== null ? (state.themeParts[partKey][themeId] ?? []) : state.parts[partKey];
   const visible  = getVisibleParts(partKey).length;
-  const filtered = state.subcat[partKey] !== "All" || state.standardOnly || state.themeId[partKey];
+  const hasMore  = !!state.nextUrl[partKey];
   const bg       = state.bgLoading[partKey];
+  const filtered = state.subcat[partKey] !== "All" || state.standardOnly || themeId !== null;
   countEl.textContent = filtered
-    ? `${visible} / ${total}${bg ? "…" : ""} parts`
-    : `${total}${bg ? "…" : ""} parts`;
+    ? `${visible} / ${allParts.length}${hasMore || bg ? "…" : ""} parts`
+    : `${allParts.length}${hasMore || bg ? "…" : ""} parts`;
 }
 
 
-// ──── Theme Loading ───────────────────────────────────────────────────────────
+// ──── Theme Loading Chain ─────────────────────────────────────────────────────
 async function loadThemesList() {
-  const cached = cacheGet("themes");
-  if (cached && cached.length) { state.allThemes = cached; return; }
+  const cached = cacheGet("themes_v4");
+  if (cached?.length) {
+    state.allThemes = cached;
+    refreshAllThemeCombos();
+    return;
+  }
 
   try {
-    // Rebrickable returns ~600 themes including nested sub-themes
-    // We load all pages and filter to top-level (parent_id === null)
     let url = `https://rebrickable.com/api/v3/lego/themes/?page_size=1000`;
-    const allThemes = [];
+    const all = [];
     while (url) {
       const data = await apiFetch(url);
-      allThemes.push(...(data.results ?? []));
+      all.push(...(data.results ?? []));
       url = data.next;
     }
-    state.allThemes = allThemes
+    // Keep only top-level themes (parent_id = null) + sort
+    state.allThemes = all
       .filter(t => t.parent_id === null)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    cacheSet("themes", state.allThemes);
-    populateThemeDropdowns();
+    cacheSet("themes_v4", state.allThemes);
+    refreshAllThemeCombos();
   } catch (e) {
     console.warn("Could not load themes:", e);
   }
 }
 
-function populateThemeDropdowns() {
+// After themes load, refresh the open dropdown if any
+function refreshAllThemeCombos() {
   for (const type of PART_TYPES) {
-    const sel = document.getElementById(`theme-${type.key}`);
-    if (!sel) continue;
-    // Clear all but the first "All themes" option
-    while (sel.options.length > 1) sel.remove(1);
-    for (const t of state.allThemes) {
-      const opt = document.createElement("option");
-      opt.value = t.id;
-      opt.textContent = t.name;
-      sel.appendChild(opt);
+    const input = document.getElementById(`themeSearch-${type.key}`);
+    if (input) input.placeholder = "🎨 Filter by theme…";
+
+    // If this combo is currently open, re-populate it
+    if (openComboKey === type.key) {
+      populateThemeDropdown(type.key, input?.value ?? "");
     }
   }
 }
 
 async function loadThemeParts(partKey, themeId) {
-  const type      = PART_TYPES.find(t => t.key === partKey);
-  const cacheKey  = `theme_${themeId}_${type.catId}`;
+  const type     = PART_TYPES.find(t => t.key === partKey);
+  const cacheKey = `theme_${themeId}_${type.catId}`;
 
-  // Return cached result if available
   const cached = cacheGet(cacheKey);
   if (cached) {
     state.themeParts[partKey][themeId] = cached.map(p => annotatePart({ ...p }));
-    renderSelector(partKey);
-    renderPreview(); renderSummary(); checkCompatibility();
+    finishThemeLoad(partKey, themeId);
     return;
   }
 
   state.themeLoading[partKey] = true;
-  renderThemeLoadingState(partKey, "Fetching sets…");
+  renderThemeLoadingState(partKey, "Fetching recent sets…");
 
   try {
-    // Step 1: get recent sets for this theme
     const setsData = await apiFetch(
       `https://rebrickable.com/api/v3/lego/sets/?theme_id=${themeId}&page_size=${THEME_MAX_SETS}&ordering=-year`
     );
     const setNums = (setsData.results ?? []).map(s => s.set_num);
 
-    if (!setNums.length) {
-      state.themeParts[partKey][themeId] = [];
-      return;
-    }
-
-    // Step 2: fetch all parts from each set, filter by catId client-side
-    // (The set parts endpoint doesn't support part_cat_id filtering)
-    const partsMap = new Map(); // part_num → part object
-    let done = 0;
-
-    for (const setNum of setNums) {
-      done++;
-      renderThemeLoadingState(partKey, `Scanning set ${done}/${setNums.length}…`);
+    const partsMap = new Map();
+    for (let i = 0; i < setNums.length; i++) {
+      renderThemeLoadingState(partKey, `Scanning set ${i + 1} / ${setNums.length}…`);
       try {
-        // Some sets are large; fetch first page (page_size=500 covers most)
-        const partsData = await apiFetch(
-          `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=500`
+        const pd = await apiFetch(
+          `https://rebrickable.com/api/v3/lego/sets/${setNums[i]}/parts/?page_size=500`
         );
-        for (const item of (partsData.results ?? [])) {
+        for (const item of (pd.results ?? [])) {
           const p = item.part;
-          // Filter to our target category, require an image
-          if (p && p.part_img_url && p.part_cat_id === type.catId && !partsMap.has(p.part_num)) {
+          if (p?.part_img_url && p.part_cat_id === type.catId && !partsMap.has(p.part_num)) {
             partsMap.set(p.part_num, p);
           }
         }
-      } catch {
-        // Skip a set that errors (404 for retired sets is common)
-      }
+      } catch {}
     }
 
-    const rawParts = Array.from(partsMap.values());
-    const parts    = rawParts.map(p => annotatePart({ ...p }));
+    const raw   = Array.from(partsMap.values());
+    const parts = raw.map(p => annotatePart({ ...p }));
     state.themeParts[partKey][themeId] = parts;
-
-    // Cache raw (un-annotated) list
-    cacheSet(cacheKey, rawParts);
-
+    cacheSet(cacheKey, raw);
   } catch (e) {
-    console.error(`Theme load error (${partKey}, theme ${themeId}):`, e);
+    console.error("Theme load error:", e);
     state.themeParts[partKey][themeId] = [];
   } finally {
     state.themeLoading[partKey] = false;
-    renderSelector(partKey);
-    renderPreview(); renderSummary(); checkCompatibility();
+    finishThemeLoad(partKey, themeId);
   }
+}
+
+function finishThemeLoad(partKey, themeId) {
+  // Only apply if this theme is still the active one (user may have changed)
+  if (state.themeId[partKey] !== themeId) return;
+  const visible = getVisibleParts(partKey);
+  state.selected[partKey] = visible[0] ?? null;
+  renderSelector(partKey);
+  renderPreview(); renderSummary(); checkCompatibility();
 }
 
 function renderThemeLoadingState(partKey, msg) {
@@ -448,30 +435,150 @@ function renderThemeLoadingState(partKey, msg) {
   if (!strip) return;
   const existing = strip.querySelector(".theme-load-msg");
   if (existing) { existing.textContent = msg; return; }
+  strip.innerHTML = `<div class="theme-load-msg">${escapeHtml(msg)}</div>`;
+}
 
-  strip.innerHTML = "";
-  const div = document.createElement("div");
-  div.className = "theme-load-msg";
-  div.textContent = msg;
-  strip.appendChild(div);
+
+// ──── Theme Combo (searchable picklist) ───────────────────────────────────────
+function buildThemeCombo(partKey) {
+  const input    = document.getElementById(`themeSearch-${partKey}`);
+  const dropdown = document.getElementById(`themeDropdown-${partKey}`);
+  if (!input || !dropdown) return;
+
+  input.addEventListener("focus", () => {
+    openComboKey = partKey;
+    populateThemeDropdown(partKey, input.value);
+    dropdown.style.display = "block";
+  });
+
+  input.addEventListener("input", () => {
+    populateThemeDropdown(partKey, input.value);
+    dropdown.style.display = "block";
+  });
+
+  // Close when focus leaves the combo
+  input.addEventListener("blur", () => {
+    // Small delay so clicks on dropdown options register first
+    setTimeout(() => {
+      if (openComboKey === partKey) {
+        dropdown.style.display = "none";
+        openComboKey = null;
+        // If input text doesn't match selected theme, reset to selected name
+        const expected = state.themeId[partKey] !== null ? state.themeName[partKey] : "";
+        input.value = expected;
+      }
+    }, 180);
+  });
+}
+
+function populateThemeDropdown(partKey, query) {
+  const dropdown = document.getElementById(`themeDropdown-${partKey}`);
+  if (!dropdown) return;
+  dropdown.innerHTML = "";
+
+  const q = query.trim().toLowerCase();
+  const loading = state.allThemes.length === 0;
+
+  // ── "All themes" option ──
+  addThemeOption(dropdown, partKey, null, "All themes", false, !q && state.themeId[partKey] === null);
+  addThemeDivider(dropdown, q ? "All themes" : "Current themes");
+
+  if (loading) {
+    addThemeHint(dropdown, "Loading themes…");
+    return;
+  }
+
+  let shown;
+  if (!q) {
+    // Default list: known current/popular themes
+    shown = state.allThemes.filter(t => CURRENT_THEME_NAMES.has(t.name));
+  } else {
+    // Search all themes (incl. retired) by name
+    shown = state.allThemes.filter(t => t.name.toLowerCase().includes(q));
+  }
+
+  for (const t of shown) {
+    addThemeOption(dropdown, partKey, t.id, t.name, false, state.themeId[partKey] === t.id);
+  }
+
+  if (!q) {
+    addThemeHint(dropdown, "Type to search all themes (incl. retired)…");
+  } else if (shown.length === 0) {
+    addThemeHint(dropdown, "No matching themes");
+  }
+}
+
+function addThemeOption(container, partKey, id, name, _unused, isSelected) {
+  const el = document.createElement("div");
+  el.className = "theme-option" + (isSelected ? " selected" : "");
+  el.textContent = name;
+  // Use mousedown so it fires before the input blur
+  el.addEventListener("mousedown", e => {
+    e.preventDefault();
+    selectTheme(partKey, id, name);
+  });
+  container.appendChild(el);
+}
+
+function addThemeDivider(container, label) {
+  const el = document.createElement("div");
+  el.className = "theme-separator";
+  el.textContent = label;
+  container.appendChild(el);
+}
+
+function addThemeHint(container, text) {
+  const el = document.createElement("div");
+  el.className = "theme-hint";
+  el.textContent = text;
+  container.appendChild(el);
+}
+
+async function selectTheme(partKey, themeId, themeName) {
+  const input    = document.getElementById(`themeSearch-${partKey}`);
+  const dropdown = document.getElementById(`themeDropdown-${partKey}`);
+
+  // Update displayed text
+  if (input) input.value = themeId === null ? "" : themeName;
+  if (dropdown) dropdown.style.display = "none";
+  openComboKey = null;
+
+  state.themeId[partKey]   = themeId;
+  state.themeName[partKey] = themeId === null ? "" : themeName;
+
+  // Reset subcategory tabs to All
+  state.subcat[partKey] = "All";
+  const card = document.getElementById(`card-${partKey}`);
+  card?.querySelectorAll(".subcat-tab").forEach(b => b.classList.toggle("active", b.dataset.subcat === "All"));
+
+  if (themeId !== null) {
+    // Show loading state immediately
+    const themeLoadBadge = document.getElementById(`themeLoadBadge-${partKey}`);
+    if (themeLoadBadge) themeLoadBadge.style.display = "inline";
+    await loadThemeParts(partKey, themeId);
+    if (themeLoadBadge) themeLoadBadge.style.display = "none";
+  } else {
+    // Cleared theme — revert to normal parts
+    const visible = getVisibleParts(partKey);
+    state.selected[partKey] = visible[0] ?? null;
+    renderSelector(partKey);
+    renderPreview(); renderSummary(); checkCompatibility();
+  }
 }
 
 
 // ──── Filtering ───────────────────────────────────────────────────────────────
 function getVisibleParts(partKey) {
-  // Theme mode: use theme-specific parts list if a theme is selected
   const themeId = state.themeId[partKey];
   let list = themeId !== null
     ? (state.themeParts[partKey][themeId] ?? [])
     : state.parts[partKey];
 
-  // Standard-only filter
   if (state.standardOnly) {
     const prefix = STANDARD_PREFIXES[partKey];
     if (prefix) list = list.filter(p => p.part_num.startsWith(prefix));
   }
 
-  // Subcategory filter
   const subcat = state.subcat[partKey];
   if (subcat !== "All") {
     const rule = (SUBCATEGORIES[partKey] ?? []).find(r => r.label === subcat);
@@ -490,7 +597,7 @@ function checkCompatibility() {
     const hs = isStandardPart("head", head), ts = isStandardPart("torso", torso);
     if (hs !== ts) warnings.push(hs
       ? "⚠️ Standard head may not fit this special torso."
-      : "⚠️ Special head may not connect to this standard torso.");
+      : "⚠️ Special head may not connect to a standard torso.");
   }
   if (torso && legs) {
     const ts = isStandardPart("torso", torso), ls = isStandardPart("legs", legs);
@@ -509,46 +616,43 @@ function checkCompatibility() {
 async function init() {
   buildUI();
 
-  // Load from localStorage cache first for instant render, then validate with API
-  let anyCached = false;
+  // Restore from localStorage cache for an instant first paint
   for (const type of PART_TYPES) {
     const cached = cacheGet(`parts_${type.catId}`);
-    if (cached && cached.length > 0) {
+    if (cached?.length) {
       state.parts[type.key] = cached.map(p => annotatePart({ ...p }));
       rebuildGroups(type.key);
-      state.nextUrl[type.key] = null; // assume full list cached
+      state.nextUrl[type.key] = null;
       const visible = getVisibleParts(type.key);
       state.selected[type.key] = visible[0] ?? null;
       renderSelector(type.key);
       renderPreview(); renderSummary();
-      anyCached = true;
     }
   }
 
-  if (anyCached) {
-    document.getElementById("loadingScreen")?.remove();
-  }
+  const anyFromCache = PART_TYPES.some(t => state.parts[t.key].length > 0);
+  if (anyFromCache) document.getElementById("loadingScreen")?.remove();
 
-  // Always fetch fresh first pages to catch new parts / validate cache
+  // Fresh fetch for each category, then immediately top-up to MIN_VISIBLE
   for (const type of PART_TYPES) {
-    await fetchParts(type.key); // sequential to respect rate limit
+    await fetchParts(type.key);
+    await ensureMinimumVisible(type.key);
   }
 
   document.getElementById("loadingScreen")?.remove();
 
-  // Start background loading for all categories in parallel (they self-rate-limit)
+  // Start background eager load (non-blocking)
   for (const type of PART_TYPES) {
-    startBackgroundLoad(type.key); // intentionally NOT awaited
+    startBackgroundLoad(type.key);
   }
 
-  // Load themes list in background after everything else
-  loadThemesList(); // intentionally NOT awaited
+  // Load themes in background (non-blocking, updates combos when ready)
+  loadThemesList();
 }
 
 
 // ──── UI Build ────────────────────────────────────────────────────────────────
 function buildUI() {
-  // Loading screen (only shown if no cache)
   const ls = document.createElement("div");
   ls.id = "loadingScreen"; ls.className = "loading-screen";
   ls.innerHTML = `
@@ -559,7 +663,6 @@ function buildUI() {
     </div>`;
   document.body.prepend(ls);
 
-  // Preview slots
   const previewStack = document.getElementById("previewStack");
   previewStack.innerHTML = "";
   for (const type of PART_TYPES) {
@@ -569,7 +672,6 @@ function buildUI() {
     previewStack.appendChild(slot);
   }
 
-  // Compat warning + standard toggle in preview card
   const previewCard = document.querySelector(".preview-card");
   if (previewCard) {
     const warn = document.createElement("div");
@@ -598,12 +700,26 @@ function buildUI() {
     });
   }
 
-  // Selector cards
   const col = document.getElementById("selectorsCol");
   col.innerHTML = "";
-  for (const type of PART_TYPES) col.appendChild(createSelectorCard(type));
+  for (const type of PART_TYPES) {
+    const card = createSelectorCard(type);
+    col.appendChild(card);
+    buildThemeCombo(type.key);
+  }
 
   document.getElementById("randomizeBtn").addEventListener("click", randomize);
+
+  // Global click: close any open theme dropdown
+  document.addEventListener("click", e => {
+    if (!openComboKey) return;
+    const combo = document.getElementById(`themeCombo-${openComboKey}`);
+    if (combo && !combo.contains(e.target)) {
+      const dropdown = document.getElementById(`themeDropdown-${openComboKey}`);
+      if (dropdown) dropdown.style.display = "none";
+      openComboKey = null;
+    }
+  });
 }
 
 function createSelectorCard(type) {
@@ -624,12 +740,13 @@ function createSelectorCard(type) {
     </div>
 
     <div class="theme-row">
-      <label class="theme-row-label">🎨 Theme</label>
-      <select class="theme-select" id="theme-${type.key}">
-        <option value="">All themes</option>
-        <!-- Populated after themes API call -->
-      </select>
-      <span class="theme-loading-badge" id="themeLoading-${type.key}" style="display:none">⏳</span>
+      <span class="theme-row-label">🎨</span>
+      <div class="theme-combo" id="themeCombo-${type.key}">
+        <input type="text" class="theme-search-input" id="themeSearch-${type.key}"
+               placeholder="🎨 Filter by theme…" autocomplete="off" spellcheck="false">
+        <div class="theme-dropdown" id="themeDropdown-${type.key}" style="display:none"></div>
+      </div>
+      <span class="theme-load-badge" id="themeLoadBadge-${type.key}" style="display:none">⏳</span>
     </div>
 
     <div class="subcat-tabs" id="tabs-${type.key}">${tabsHtml}</div>
@@ -656,32 +773,7 @@ function createSelectorCard(type) {
       <div class="variant-chips" id="variantChips-${type.key}"></div>
     </div>`;
 
-  // ── Theme dropdown ──
-  const themeSelect = card.querySelector(`#theme-${type.key}`);
-  themeSelect.addEventListener("change", async () => {
-    const themeId = themeSelect.value ? parseInt(themeSelect.value) : null;
-    state.themeId[type.key] = themeId;
-    state.subcat[type.key] = "All";
-    card.querySelectorAll(".subcat-tab").forEach(b => b.classList.toggle("active", b.dataset.subcat === "All"));
-
-    if (themeId !== null) {
-      // Show loading badge on the dropdown row
-      const badge = document.getElementById(`themeLoading-${type.key}`);
-      if (badge) badge.style.display = "inline";
-
-      await loadThemeParts(type.key, themeId);
-
-      if (badge) badge.style.display = "none";
-    }
-
-    // Auto-select first visible part in new theme
-    const visible = getVisibleParts(type.key);
-    state.selected[type.key] = visible[0] ?? null;
-    renderSelector(type.key);
-    renderPreview(); renderSummary(); checkCompatibility();
-  });
-
-  // ── Subcategory tabs ──
+  // Subcategory tabs
   card.querySelector(`#tabs-${type.key}`).addEventListener("click", e => {
     const btn = e.target.closest(".subcat-tab");
     if (!btn) return;
@@ -696,26 +788,26 @@ function createSelectorCard(type) {
     renderPreview(); renderSummary(); checkCompatibility();
   });
 
-  // ── Search ──
+  // Search input
   const searchInput = card.querySelector(`#search-${type.key}`);
   searchInput.addEventListener("input", () => {
     const term = searchInput.value.trim();
     state.search[type.key] = term;
     clearTimeout(searchTimers[type.key]);
     searchTimers[type.key] = setTimeout(async () => {
-      // Clear theme filter when searching
       state.themeId[type.key] = null;
-      const sel = document.getElementById(`theme-${type.key}`);
-      if (sel) sel.value = "";
+      state.themeName[type.key] = "";
+      const ti = document.getElementById(`themeSearch-${type.key}`);
+      if (ti) { ti.value = ""; }
       await fetchParts(type.key, term);
     }, 600);
   });
 
-  // ── Nav buttons ──
+  // Nav buttons
   card.querySelector(`#prev-${type.key}`).addEventListener("click", () => navigatePart(type.key, -1));
   card.querySelector(`#next-${type.key}`).addEventListener("click", () => navigatePart(type.key,  1));
 
-  // ── Scroll-to-load-more (for non-cached sessions) ──
+  // Scroll-to-load-more
   const strip = card.querySelector(`#strip-${type.key}`);
   strip.addEventListener("scroll", () => {
     if (state.loading[type.key] || state.bgLoading[type.key] || !state.nextUrl[type.key]) return;
@@ -740,10 +832,8 @@ function navigatePart(partKey, dir) {
   let newIdx = idx + dir;
   if (newIdx < 0) newIdx = parts.length - 1;
   if (newIdx >= parts.length) {
-    // Try to fetch more if not in theme mode
     if (!state.themeId[partKey] && state.nextUrl[partKey]) {
-      startBackgroundLoad(partKey);
-      return;
+      startBackgroundLoad(partKey); return;
     }
     newIdx = 0;
   }
@@ -774,23 +864,9 @@ function renderSelector(partKey) {
   const visible   = getVisibleParts(partKey);
   const selected  = state.selected[partKey];
   const isLoading = state.loading[partKey];
-  const isBg      = state.bgLoading[partKey];
 
-  // Count label
-  const countEl = document.getElementById(`count-${partKey}`);
-  if (countEl) {
-    const filtered = state.subcat[partKey] !== "All" || state.standardOnly || themeId !== null;
-    const hasMore  = !!state.nextUrl[partKey];
-    countEl.textContent = filtered
-      ? `${visible.length} / ${allParts.length}${hasMore || isBg ? "…" : ""} parts`
-      : `${allParts.length}${hasMore || isBg ? "…" : ""} parts`;
-  }
+  renderCountLabel(partKey);
 
-  // Theme loading indicator on badge
-  const themeBadge = document.getElementById(`themeLoading-${partKey}`);
-  if (themeBadge) themeBadge.style.display = state.themeLoading[partKey] ? "inline" : "none";
-
-  // Nav buttons
   const prevBtn = document.getElementById(`prev-${partKey}`);
   const nextBtn = document.getElementById(`next-${partKey}`);
   if (prevBtn) prevBtn.disabled = !visible.length;
@@ -802,7 +878,10 @@ function renderSelector(partKey) {
   strip.innerHTML = "";
 
   if (!visible.length && !isLoading && !state.themeLoading[partKey]) {
-    strip.innerHTML = `<div class="empty-msg">No parts found</div>`;
+    const msg = state.themeLoading[partKey]
+      ? ""
+      : "No parts found";
+    strip.innerHTML = `<div class="empty-msg">${escapeHtml(msg)}</div>`;
   }
 
   for (const part of visible) {
@@ -819,6 +898,8 @@ function renderSelector(partKey) {
       ${hasFusion ? `<span class="fusion-dot" title="${escapeHtml("+" + part._p.fusion.join(", "))}">+</span>` : ""}`;
     thumb.addEventListener("click", () => {
       state.selected[partKey] = part;
+      // Reset variant expand on new selection
+      state.variantExpanded[partKey] = false;
       renderSelector(partKey);
       renderPreview(); renderSummary(); checkCompatibility();
     });
@@ -833,7 +914,6 @@ function renderSelector(partKey) {
     strip.appendChild(dot);
   }
 
-  // Background loading indicator in count (already handled above)
   // Info bar
   const infoEl  = document.getElementById(`info-${partKey}`);
   const nameEl  = document.getElementById(`infoName-${partKey}`);
@@ -856,12 +936,12 @@ function renderSelector(partKey) {
     infoEl.style.display = "none";
   }
 
-  // Variant chips row
+  // ── Variant chips with expand/collapse ──
   const variantEl = document.getElementById(`variants-${partKey}`);
   const chipsEl   = document.getElementById(`variantChips-${partKey}`);
+
   if (selected && variantEl && chipsEl) {
     const baseId   = selected._n?.baseId;
-    // In theme mode, siblings come from theme parts; otherwise from global groups
     const siblings = themeId !== null
       ? (state.themeParts[partKey][themeId] ?? []).filter(p => p._n?.baseId === baseId)
       : (state.groups[partKey]?.[baseId] ?? []);
@@ -869,7 +949,12 @@ function renderSelector(partKey) {
     if (siblings.length > 1) {
       variantEl.style.display = "block";
       chipsEl.innerHTML = "";
-      for (const sib of siblings) {
+
+      const expanded = state.variantExpanded[partKey];
+      const shown    = expanded ? siblings : siblings.slice(0, VARIANT_SHOW);
+      const overflow = siblings.length - VARIANT_SHOW;
+
+      for (const sib of shown) {
         const chip = document.createElement("button");
         chip.className = "variant-chip" + (sib.part_num === selected.part_num ? " active" : "");
         chip.textContent = sib._n?.variantSuffix || sib._p?.decoration || sib.part_num;
@@ -880,6 +965,29 @@ function renderSelector(partKey) {
           renderPreview(); renderSummary(); checkCompatibility();
         });
         chipsEl.appendChild(chip);
+      }
+
+      // Expand / collapse toggle
+      if (!expanded && overflow > 0) {
+        const more = document.createElement("button");
+        more.className = "variant-expand-btn";
+        more.textContent = `••• ${overflow} more`;
+        more.title = "Show all variants";
+        more.addEventListener("click", () => {
+          state.variantExpanded[partKey] = true;
+          renderSelector(partKey);
+        });
+        chipsEl.appendChild(more);
+      } else if (expanded && siblings.length > VARIANT_SHOW) {
+        const less = document.createElement("button");
+        less.className = "variant-expand-btn variant-collapse-btn";
+        less.textContent = "collapse ▲";
+        less.title = "Show fewer variants";
+        less.addEventListener("click", () => {
+          state.variantExpanded[partKey] = false;
+          renderSelector(partKey);
+        });
+        chipsEl.appendChild(less);
       }
     } else {
       variantEl.style.display = "none";
@@ -911,7 +1019,7 @@ function renderSummary() {
   if (!list) return;
   list.innerHTML = "";
   for (const type of PART_TYPES) {
-    const part  = state.selected[type.key];
+    const part   = state.selected[type.key];
     const subcat = part ? getSubcategoryLabel(type.key, part) : null;
     const fusion = part?._p?.fusion ?? [];
     const deco   = part?._p?.decoration;
@@ -919,7 +1027,7 @@ function renderSummary() {
       ? (part.name.length > 32 ? part.name.slice(0, 32) + "…" : part.name)
       : `No ${type.label}`;
     const bp = subcat ? [subcat] : [];
-    if (fusion.length) bp.push("+" + fusion[0]);
+    if (fusion.length)            bp.push("+" + fusion[0]);
     if (deco && deco !== "Plain") bp.push(deco);
     const item = document.createElement("div");
     item.className = "summary-item";
