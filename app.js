@@ -1,27 +1,43 @@
 /* ============================================================
-   LEGO MINIFIG BUILDER — Application Logic v4
+   LEGO MINIFIG BUILDER — Application Logic v5
    ============================================================
 
-   KEY CHANGES IN v4
+   KEY CHANGES IN v5
    ──────────────────
-   1. ensureMinimumVisible()
-      After each initial category fetch, we immediately top-up
-      with extra pages until ≥20 parts match the active subcategory.
-      This eliminates the "0 parts" flash when the default tab is
-      a strict subset (e.g. head="Standard" needs 3626* parts which
-      might not all be on page 1).
+   1. Offline catalog (see catalog.js)
+      Part metadata (part_num/name/category) for all 4 slots now
+      loads instantly from an IndexedDB snapshot of Rebrickable's
+      daily CSV dump — no rate limit, no "0 parts" flash. Photos
+      are the only thing that still needs the API, so they stream
+      in progressively (skeleton → photo) instead of gating the
+      whole category. See seedFromCatalog() / state.usingCatalog.
 
-   2. Searchable theme combo
-      Replaces the <select> with a custom input+dropdown combo:
-      • Unfocused: shows placeholder "🎨 Filter by theme…"
-      • On focus with empty query: shows ~30 current/popular themes
-      • Typing: searches ALL themes (incl. retired) by name
-      • Selection triggers theme loading chain as before
+   2. Prioritized image queue
+      A single shared queue (imageQueue) keeps the 1 req/sec API
+      limiter busy with whatever the user can actually see first:
+      the current selection > the default view's likely prefix
+      (e.g. "3626" for standard heads) > a full background sweep
+      of the rest of the category. See startImageLoading() /
+      prioritizeImage().
 
-   3. Collapsible variant chips
-      Renders first 10 chips. If >10 siblings exist, shows a
-      "••• N more" expand button. Expanded state shows all chips
-      plus a "collapse" button.
+   3. Instant local search
+      In catalog mode, typing filters+ranks the in-memory metadata
+      directly (searchScore()) with no network round-trip; a
+      targeted API call then backfills photos for the matches.
+      Categories without an offline snapshot (CORS/old browser)
+      fall back to the original live-API search.
+
+   4. Live reconciliation
+      Every 15 min while the tab is visible, and whenever a photo
+      page is fetched, part_nums are diffed against the offline
+      snapshot — anything new gets folded in and badged "NEW"
+      instead of waiting for the next full catalog refresh.
+
+   ─── Carried over from v4 ───
+   • ensureMinimumVisible() / startBackgroundLoad() — legacy paging
+     fallback for any category the offline catalog couldn't cover.
+   • Searchable theme combo (search all themes incl. retired).
+   • Collapsible variant chips (show 10, "••• N more" to expand).
    ============================================================ */
 
 // ──── Config ──────────────────────────────────────────────────────────────────
@@ -190,6 +206,11 @@ const state = {
 
   // Variant chip expand state per slot
   variantExpanded: { hair: false, head: false, torso: false, legs: false },
+
+  // Offline-catalog mode: metadata for the whole category is already known
+  // (from catalog.js), only photos stream in progressively.
+  usingCatalog:    { hair: false, head: false, torso: false, legs: false },
+  imageSweepDone:  { hair: false, head: false, torso: false, legs: false },
 };
 
 const searchTimers = {};
@@ -323,10 +344,229 @@ function renderCountLabel(partKey) {
   const visible  = getVisibleParts(partKey).length;
   const hasMore  = !!state.nextUrl[partKey];
   const bg       = state.bgLoading[partKey];
+  const loadingPhotos = state.usingCatalog[partKey] && !state.imageSweepDone[partKey];
+  const suffix   = hasMore || bg ? "…" : loadingPhotos ? " (loading photos…)" : "";
   const filtered = state.subcat[partKey] !== "All" || state.standardOnly || themeId !== null;
   countEl.textContent = filtered
-    ? `${visible} / ${allParts.length}${hasMore || bg ? "…" : ""} parts`
-    : `${allParts.length}${hasMore || bg ? "…" : ""} parts`;
+    ? `${visible} / ${allParts.length}${suffix} parts`
+    : `${allParts.length}${suffix} parts`;
+}
+
+
+// ──── Offline Catalog Integration ──────────────────────────────────────────────
+// Seed a category straight from the offline metadata snapshot (instant, no
+// network) and kick off progressive, prioritized photo loading for it.
+function seedFromCatalog(partKey, catParts) {
+  state.usingCatalog[partKey] = true;
+  state.parts[partKey] = catParts.map(p => annotatePart({
+    ...p, part_img_url: Catalog.getImage(p.part_num) ?? null,
+  }));
+  rebuildGroups(partKey);
+  state.nextUrl[partKey] = null; // metadata is already complete; only photos stream in
+
+  const visible = getVisibleParts(partKey);
+  state.selected[partKey] = visible[0] ?? null;
+  if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
+  renderSelector(partKey);
+  renderPreview(); renderSummary(); checkCompatibility();
+}
+
+// Called when catalog.js learns about new part_nums, either from a periodic
+// CSV re-download or from reconciling a live API response.
+function handleCatalogUpdate(partKey, info) {
+  if (!info?.added?.length || !state.usingCatalog[partKey]) return;
+  const known = new Set(state.parts[partKey].map(p => p.part_num));
+  let changed = false;
+  for (const entry of info.added) {
+    if (known.has(entry.part_num)) continue;
+    known.add(entry.part_num);
+    state.parts[partKey].push(annotatePart({
+      ...entry, part_img_url: Catalog.getImage(entry.part_num) ?? null,
+    }));
+    changed = true;
+  }
+  if (changed) {
+    rebuildGroups(partKey);
+    renderSelector(partKey);
+    renderCountLabel(partKey);
+  }
+}
+
+
+// ──── Prioritized Image Loading (catalog mode) ─────────────────────────────────
+// A single shared queue (still gated by the 1 req/sec rateLimiter used by
+// apiFetch) so "fill what the user can see right now" requests always jump
+// ahead of the slow, exhaustive background sweep of the whole category.
+const imageQueue = { high: [], low: [] };
+let imageQueueRunning = false;
+
+function queueImageTask(task, priority = "low") {
+  imageQueue[priority].push(task);
+  runImageQueue();
+}
+
+async function runImageQueue() {
+  if (imageQueueRunning) return;
+  imageQueueRunning = true;
+  try {
+    while (imageQueue.high.length || imageQueue.low.length) {
+      const task = imageQueue.high.shift() ?? imageQueue.low.shift();
+      try { await task(); } catch (e) { console.warn("Image task failed:", e); }
+    }
+  } finally {
+    imageQueueRunning = false;
+  }
+}
+
+// Merge photo URLs (and any brand-new part_nums) from a page of live API
+// results into the in-memory state + offline image cache.
+function applyImageResults(partKey, apiParts) {
+  const withImg = apiParts.filter(p => p.part_img_url);
+  Catalog.setImages(withImg.map(p => [p.part_num, p.part_img_url]));
+
+  const byNum = new Map(state.parts[partKey].map(p => [p.part_num, p]));
+  let changed = false;
+  for (const p of withImg) {
+    const existing = byNum.get(p.part_num);
+    if (existing && existing.part_img_url !== p.part_img_url) {
+      existing.part_img_url = p.part_img_url;
+      changed = true;
+    }
+  }
+
+  const added = Catalog.reconcile(partKey, apiParts);
+  for (const entry of added) {
+    if (byNum.has(entry.part_num)) continue;
+    state.parts[partKey].push(annotatePart({ ...entry }));
+    changed = true;
+  }
+
+  if (changed) {
+    rebuildGroups(partKey);
+    renderSelector(partKey);
+    renderCountLabel(partKey);
+  }
+}
+
+function startImageLoading(partKey) {
+  const type = PART_TYPES.find(t => t.key === partKey);
+
+  // 1) Targeted fetch for whatever the default view actually needs — usually
+  //    1-2 requests instead of blindly paginating from page 1 and hoping.
+  const prefix = STANDARD_PREFIXES[partKey];
+  const targetedUrl = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}` +
+    (prefix ? `&search=${encodeURIComponent(prefix)}` : "");
+  queueImageTask(async () => {
+    const data = await apiFetch(targetedUrl);
+    applyImageResults(partKey, data.results ?? []);
+  }, "high");
+
+  // 2) Broad low-priority sweep of every page to backfill the rest of the
+  //    category and to catch parts added since the offline snapshot.
+  queueImageTask(() => sweepCategoryImages(partKey), "low");
+}
+
+async function sweepCategoryImages(partKey) {
+  const type = PART_TYPES.find(t => t.key === partKey);
+  let url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`;
+  while (url) {
+    const data = await apiFetch(url);
+    applyImageResults(partKey, data.results ?? []);
+    url = data.next;
+  }
+  state.imageSweepDone[partKey] = true;
+  flagPartsWithNoImage(partKey);
+  renderCountLabel(partKey);
+}
+
+function flagPartsWithNoImage(partKey) {
+  let changed = false;
+  for (const p of state.parts[partKey]) {
+    if (!p.part_img_url && !p._noImage) { p._noImage = true; changed = true; }
+  }
+  if (changed) renderSelector(partKey);
+}
+
+// Jump a specific part's photo to the front of the queue — used when the
+// user selects/navigates to a part whose image hasn't loaded yet.
+function prioritizeImage(partKey, part) {
+  if (!state.usingCatalog[partKey] || part.part_img_url || part._noImage) return;
+  const url = `https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/`;
+  imageQueue.high.unshift(async () => {
+    try {
+      const data = await apiFetch(url);
+      applyImageResults(partKey, [data]);
+    } catch {
+      part._noImage = true;
+      renderSelector(partKey);
+    }
+  });
+  runImageQueue();
+}
+
+// Selection helper shared by thumb clicks, nav buttons, variant chips and
+// randomize — centralizes the "bump this part's photo to the front" step.
+function selectPart(partKey, part) {
+  const prev = state.selected[partKey];
+  state.selected[partKey] = part;
+  // Only collapse the variant chip row when switching to a different mold —
+  // picking a sibling variant should keep it expanded.
+  if (!prev || prev._n?.baseId !== part._n?.baseId) state.variantExpanded[partKey] = false;
+  prioritizeImage(partKey, part);
+  renderSelector(partKey);
+  renderPreview(); renderSummary(); checkCompatibility();
+}
+
+// Search box handler: instant local filter+rank in catalog mode (getVisibleParts
+// does the actual filtering), backfilled by a targeted high-priority photo
+// fetch for the matches. Legacy categories still hit the live API directly.
+function runSearch(partKey, term) {
+  state.themeId[partKey] = null;
+  state.themeName[partKey] = "";
+  const ti = document.getElementById(`themeSearch-${partKey}`);
+  if (ti) ti.value = "";
+
+  if (!state.usingCatalog[partKey]) {
+    fetchParts(partKey, term);
+    return;
+  }
+
+  const visible = getVisibleParts(partKey);
+  if (!visible.find(p => p.part_num === state.selected[partKey]?.part_num)) {
+    state.selected[partKey] = visible[0] ?? null;
+    if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
+  }
+  renderSelector(partKey);
+  renderPreview(); renderSummary(); checkCompatibility();
+
+  if (term) {
+    const type = PART_TYPES.find(t => t.key === partKey);
+    queueImageTask(async () => {
+      const data = await apiFetch(
+        `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}&search=${encodeURIComponent(term)}`
+      );
+      applyImageResults(partKey, data.results ?? []);
+    }, "high");
+  }
+}
+
+// While the tab stays open, periodically recheck each category's first page
+// against the offline snapshot so parts added to Rebrickable mid-session
+// show up without the user having to reload.
+function startLiveReconciliation() {
+  const INTERVAL_MS = 15 * 60 * 1000;
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    for (const type of PART_TYPES) {
+      if (!state.usingCatalog[type.key]) continue;
+      queueImageTask(async () => {
+        const data = await apiFetch(
+          `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`
+        );
+        applyImageResults(type.key, data.results ?? []);
+      }, "low");
+    }
+  }, INTERVAL_MS);
 }
 
 
@@ -568,6 +808,22 @@ async function selectTheme(partKey, themeId, themeName) {
 
 
 // ──── Filtering ───────────────────────────────────────────────────────────────
+// Ranked local search: exact part_num > part_num prefix > name prefix >
+// word-boundary match > plain substring. Runs instantly over the full
+// in-memory catalog — no network round-trip per keystroke.
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function searchScore(part, q) {
+  const name = part.name.toLowerCase();
+  const num  = part.part_num.toLowerCase();
+  if (num === q) return 0;
+  if (num.startsWith(q)) return 1;
+  if (name.startsWith(q)) return 2;
+  if (new RegExp(`\\b${escapeRegex(q)}`).test(name)) return 3;
+  if (name.includes(q) || num.includes(q)) return 4;
+  return -1;
+}
+
 function getVisibleParts(partKey) {
   const themeId = state.themeId[partKey];
   let list = themeId !== null
@@ -583,6 +839,18 @@ function getVisibleParts(partKey) {
   if (subcat !== "All") {
     const rule = (SUBCATEGORIES[partKey] ?? []).find(r => r.label === subcat);
     if (rule) list = list.filter(rule.test);
+  }
+
+  // In catalog mode the search box filters the local metadata directly
+  // instead of relying on a server round-trip for every keystroke.
+  const term = state.search[partKey];
+  if (term && state.usingCatalog[partKey] && themeId === null) {
+    const q = term.trim().toLowerCase();
+    list = list
+      .map(p => ({ p, s: searchScore(p, q) }))
+      .filter(x => x.s >= 0)
+      .sort((a, b) => a.s - b.s)
+      .map(x => x.p);
   }
 
   return list;
@@ -616,38 +884,62 @@ function checkCompatibility() {
 async function init() {
   buildUI();
 
-  // Restore from localStorage cache for an instant first paint
+  // Offline metadata catalog: instant + complete when available (see
+  // catalog.js). Resolves with empty arrays for any category it couldn't
+  // fetch (no CORS, offline, old browser), which falls back to the
+  // original live-API pagination path below for just that category.
+  let offlineCatalog = { hair: [], head: [], torso: [], legs: [] };
+  try {
+    offlineCatalog = await Catalog.init();
+  } catch (e) {
+    console.warn("Catalog.init() failed, using live API for everything:", e);
+  }
+  Catalog.onUpdate(handleCatalogUpdate);
+
   for (const type of PART_TYPES) {
-    const cached = cacheGet(`parts_${type.catId}`);
-    if (cached?.length) {
-      state.parts[type.key] = cached.map(p => annotatePart({ ...p }));
-      rebuildGroups(type.key);
-      state.nextUrl[type.key] = null;
-      const visible = getVisibleParts(type.key);
-      state.selected[type.key] = visible[0] ?? null;
-      renderSelector(type.key);
-      renderPreview(); renderSummary();
+    if (offlineCatalog[type.key]?.length) {
+      seedFromCatalog(type.key, offlineCatalog[type.key]);
+    } else {
+      // Legacy fallback: restore from localStorage for an instant-ish first paint.
+      const cached = cacheGet(`parts_${type.catId}`);
+      if (cached?.length) {
+        state.parts[type.key] = cached.map(p => annotatePart({ ...p }));
+        rebuildGroups(type.key);
+        state.nextUrl[type.key] = null;
+        const visible = getVisibleParts(type.key);
+        state.selected[type.key] = visible[0] ?? null;
+        renderSelector(type.key);
+        renderPreview(); renderSummary();
+      }
     }
   }
 
-  const anyFromCache = PART_TYPES.some(t => state.parts[t.key].length > 0);
-  if (anyFromCache) document.getElementById("loadingScreen")?.remove();
+  const anyReady = PART_TYPES.some(t => state.parts[t.key].length > 0);
+  if (anyReady) document.getElementById("loadingScreen")?.remove();
 
-  // Fresh fetch for each category, then immediately top-up to MIN_VISIBLE
+  // Only categories without an offline snapshot need the old blocking
+  // fetch-then-top-up dance; catalog-backed categories already have all
+  // their metadata and just need photos (handled below, non-blocking).
   for (const type of PART_TYPES) {
-    await fetchParts(type.key);
-    await ensureMinimumVisible(type.key);
+    if (!state.usingCatalog[type.key]) {
+      await fetchParts(type.key);
+      await ensureMinimumVisible(type.key);
+    }
   }
 
   document.getElementById("loadingScreen")?.remove();
 
-  // Start background eager load (non-blocking)
+  // Start progressive photo loading (catalog mode) / eager paging (legacy).
   for (const type of PART_TYPES) {
-    startBackgroundLoad(type.key);
+    if (state.usingCatalog[type.key]) startImageLoading(type.key);
+    else startBackgroundLoad(type.key);
   }
 
   // Load themes in background (non-blocking, updates combos when ready)
   loadThemesList();
+
+  // Keep catching newly-added Rebrickable parts while the tab stays open.
+  startLiveReconciliation();
 }
 
 
@@ -693,6 +985,7 @@ function buildUI() {
         const visible = getVisibleParts(t.key);
         if (!visible.find(p => p.part_num === state.selected[t.key]?.part_num)) {
           state.selected[t.key] = visible[0] ?? null;
+          if (state.selected[t.key]) prioritizeImage(t.key, state.selected[t.key]);
         }
         renderSelector(t.key);
       });
@@ -783,24 +1076,21 @@ function createSelectorCard(type) {
     const visible = getVisibleParts(type.key);
     if (!visible.find(p => p.part_num === state.selected[type.key]?.part_num)) {
       state.selected[type.key] = visible[0] ?? null;
+      if (state.selected[type.key]) prioritizeImage(type.key, state.selected[type.key]);
     }
     renderSelector(type.key);
     renderPreview(); renderSummary(); checkCompatibility();
   });
 
-  // Search input
+  // Search input — instant local ranked search in catalog mode (no network
+  // wait per keystroke); falls back to the live API for legacy categories.
   const searchInput = card.querySelector(`#search-${type.key}`);
   searchInput.addEventListener("input", () => {
     const term = searchInput.value.trim();
     state.search[type.key] = term;
     clearTimeout(searchTimers[type.key]);
-    searchTimers[type.key] = setTimeout(async () => {
-      state.themeId[type.key] = null;
-      state.themeName[type.key] = "";
-      const ti = document.getElementById(`themeSearch-${type.key}`);
-      if (ti) { ti.value = ""; }
-      await fetchParts(type.key, term);
-    }, 600);
+    const delay = state.usingCatalog[type.key] ? 120 : 600;
+    searchTimers[type.key] = setTimeout(() => runSearch(type.key, term), delay);
   });
 
   // Nav buttons
@@ -838,9 +1128,7 @@ function navigatePart(partKey, dir) {
     newIdx = 0;
   }
 
-  state.selected[partKey] = parts[newIdx];
-  renderSelector(partKey);
-  renderPreview(); renderSummary(); checkCompatibility();
+  selectPart(partKey, parts[newIdx]);
   document.querySelector(`#strip-${partKey} .part-thumb.selected`)
     ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
 }
@@ -850,7 +1138,11 @@ function navigatePart(partKey, dir) {
 function randomize() {
   for (const type of PART_TYPES) {
     const parts = getVisibleParts(type.key);
-    if (parts.length) state.selected[type.key] = parts[Math.floor(Math.random() * parts.length)];
+    if (!parts.length) continue;
+    const part = parts[Math.floor(Math.random() * parts.length)];
+    state.selected[type.key] = part;
+    state.variantExpanded[type.key] = false;
+    prioritizeImage(type.key, part);
   }
   PART_TYPES.forEach(t => renderSelector(t.key));
   renderPreview(); renderSummary(); checkCompatibility();
@@ -888,22 +1180,28 @@ function renderSelector(partKey) {
     const isSelected = selected?.part_num === part.part_num;
     const isStd      = isStandardPart(partKey, part);
     const hasFusion  = (part._p?.fusion?.length ?? 0) > 0;
+    const fusionDot  = hasFusion
+      ? `<span class="fusion-dot" title="${escapeHtml("+" + part._p.fusion.join(", "))}">+</span>` : "";
+    const newBadge   = part._new ? `<span class="new-part-badge" title="Added since last catalog sync">NEW</span>` : "";
 
     const thumb = document.createElement("div");
     thumb.className = ["part-thumb", isSelected ? "selected" : "", !isStd ? "special-part" : ""]
       .filter(Boolean).join(" ");
     thumb.title = part.name;
-    thumb.innerHTML = `
-      <img src="${part.part_img_url}" alt="${escapeHtml(part.name)}" loading="lazy">
-      ${hasFusion ? `<span class="fusion-dot" title="${escapeHtml("+" + part._p.fusion.join(", "))}">+</span>` : ""}`;
-    thumb.addEventListener("click", () => {
-      state.selected[partKey] = part;
-      // Reset variant expand on new selection
-      state.variantExpanded[partKey] = false;
-      renderSelector(partKey);
-      renderPreview(); renderSummary(); checkCompatibility();
-    });
-    thumb.querySelector("img").addEventListener("error", e => e.target.style.display = "none");
+
+    if (part.part_img_url) {
+      thumb.innerHTML = `
+        <img src="${part.part_img_url}" alt="${escapeHtml(part.name)}" loading="lazy">
+        ${fusionDot}${newBadge}`;
+      thumb.querySelector("img").addEventListener("error", e => e.target.style.display = "none");
+    } else if (part._noImage) {
+      thumb.innerHTML = `<div class="thumb-noimg" title="No photo available">🧱</div>${newBadge}`;
+    } else {
+      thumb.classList.add("pending-image");
+      thumb.innerHTML = `<div class="thumb-skeleton"></div>${newBadge}`;
+    }
+
+    thumb.addEventListener("click", () => selectPart(partKey, part));
     strip.appendChild(thumb);
   }
 
@@ -959,11 +1257,7 @@ function renderSelector(partKey) {
         chip.className = "variant-chip" + (sib.part_num === selected.part_num ? " active" : "");
         chip.textContent = sib._n?.variantSuffix || sib._p?.decoration || sib.part_num;
         chip.title = sib.name;
-        chip.addEventListener("click", () => {
-          state.selected[partKey] = sib;
-          renderSelector(partKey);
-          renderPreview(); renderSummary(); checkCompatibility();
-        });
+        chip.addEventListener("click", () => selectPart(partKey, sib));
         chipsEl.appendChild(chip);
       }
 
