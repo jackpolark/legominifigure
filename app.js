@@ -207,7 +207,7 @@ const state = {
   bgLoading:       { hair: false, head: false, torso: false, legs: false },
   search:          { hair: "", head: "", torso: "", legs: "" },
   subcat:          { hair: "All", head: "Standard", torso: "Standard", legs: "Legs" },
-  standardOnly:    false,
+  standardOnly:    true,
 
   allThemes:       [],  // full list from API
   themeId:         { hair: null, head: null, torso: null, legs: null },
@@ -284,8 +284,14 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
     state.nextUrl[partKey] = data.next;
 
     if (!append) {
-      const visible = getVisibleParts(partKey);
-      state.selected[partKey] = visible[0] ?? null;
+      if (search) {
+        // Explicit search — show what was searched for, not the pinned default.
+        state.userSelected[partKey] = true;
+        const visible = getVisibleParts(partKey);
+        state.selected[partKey] = visible[0] ?? null;
+      } else {
+        ensureSelection(partKey);
+      }
     }
   } catch (err) {
     console.error(`Error fetching ${partKey}:`, err);
@@ -382,6 +388,68 @@ function applyDefaultIfUnselected(partKey) {
   return true;
 }
 
+// True while this slot is showing its DEFAULT_PART_NUMS pick and the user
+// hasn't acted on it yet. While pinned, background processes must not swap
+// the selection to something else — see ensureSelection().
+function isPinnedDefault(partKey) {
+  return !state.userSelected[partKey] &&
+    state.selected[partKey]?.part_num === DEFAULT_PART_NUMS[partKey];
+}
+
+// Called by every automatic (non-user-driven) code path that rebuilds
+// state.parts[partKey] and needs to (re)establish a selection: initial live
+// fetch, catalog seed, catalog upgrade, incremental reconciliation. If a
+// selection already exists — the pinned default, or a part the user
+// explicitly picked before this rebuild ran — it's kept as-is, re-adding it
+// to the parts list if the rebuild happened to drop it, instead of falling
+// back to whatever ends up first in the new list.
+function ensureSelection(partKey) {
+  const cur = state.selected[partKey];
+  if (cur && (isPinnedDefault(partKey) || state.userSelected[partKey])) {
+    if (!state.parts[partKey].some(p => p.part_num === cur.part_num)) {
+      state.parts[partKey] = [cur, ...state.parts[partKey]];
+      rebuildGroups(partKey);
+    }
+    return;
+  }
+  if (applyDefaultIfUnselected(partKey)) return;
+  const visible = getVisibleParts(partKey);
+  state.selected[partKey] = visible[0] ?? null;
+}
+
+// Fetches this build's default part for each slot directly by part_num —
+// independent of whatever page/category-listing order the live API or
+// offline catalog happens to load in, and immune to a part being filed
+// under a category-id we don't otherwise fetch. Dispatched first thing in
+// init() so these 4 requests are first in the shared apiFetch rate-limiter
+// queue; each renders as soon as it resolves rather than waiting for the
+// others.
+async function loadDefaultParts() {
+  await Promise.all(PART_TYPES.map(async type => {
+    const num = DEFAULT_PART_NUMS[type.key];
+    if (!num) return;
+    try {
+      const data = await apiFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(num)}/?inc_color_details=0`);
+      if (!data?.part_num) return;
+
+      let part = state.parts[type.key].find(p => p.part_num === data.part_num);
+      if (!part) {
+        part = annotatePart(data);
+        state.parts[type.key] = [part, ...state.parts[type.key]];
+        rebuildGroups(type.key);
+      }
+      if (state.userSelected[type.key]) return;
+
+      state.selected[type.key] = part;
+      if (state.usingCatalog[type.key]) prioritizeImage(type.key, part);
+      renderSelector(type.key);
+      renderPreview(); renderSummary(); checkCompatibility();
+    } catch (e) {
+      console.warn(`Could not load default part for ${type.key} (${num}):`, e);
+    }
+  }));
+}
+
 // ──── Offline Catalog Integration ──────────────────────────────────────────────
 // Seed a category straight from the offline metadata snapshot (instant, no
 // network) and kick off progressive, prioritized photo loading for it.
@@ -393,10 +461,7 @@ function seedFromCatalog(partKey, catParts) {
   rebuildGroups(partKey);
   state.nextUrl[partKey] = null; // metadata is already complete; only photos stream in
 
-  if (!applyDefaultIfUnselected(partKey)) {
-    const visible = getVisibleParts(partKey);
-    state.selected[partKey] = visible[0] ?? null;
-  }
+  ensureSelection(partKey);
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
   renderSelector(partKey);
   renderPreview(); renderSummary(); checkCompatibility();
@@ -423,7 +488,8 @@ function handleCatalogUpdate(partKey, info) {
   }
   if (changed) {
     rebuildGroups(partKey);
-    if (applyDefaultIfUnselected(partKey)) prioritizeImage(partKey, state.selected[partKey]);
+    ensureSelection(partKey);
+    if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
     renderSelector(partKey);
     renderCountLabel(partKey);
   }
@@ -431,10 +497,7 @@ function handleCatalogUpdate(partKey, info) {
 
 // Switch a category from the live-API fallback over to the offline catalog
 // once its snapshot arrives, without discarding whatever the user was
-// already looking at (parts already fetched live keep their photos; the
-// current selection is preserved if it's still in the merged list — unless
-// the user hasn't chosen yet and the DEFAULT_PART_NUMS pick just became
-// available, in which case that takes over).
+// already looking at — see ensureSelection().
 function upgradeToCatalog(partKey, catParts) {
   if (state.usingCatalog[partKey] || !catParts?.length) return;
   const existingByNum = new Map(state.parts[partKey].map(p => [p.part_num, p]));
@@ -446,14 +509,7 @@ function upgradeToCatalog(partKey, catParts) {
   state.bgLoading[partKey] = false;
   rebuildGroups(partKey);
 
-  if (!applyDefaultIfUnselected(partKey)) {
-    const stillSelected = state.selected[partKey] &&
-      state.parts[partKey].some(p => p.part_num === state.selected[partKey].part_num);
-    if (!stillSelected) {
-      const visible = getVisibleParts(partKey);
-      state.selected[partKey] = visible[0] ?? null;
-    }
-  }
+  ensureSelection(partKey);
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
   renderSelector(partKey);
   renderPreview(); renderSummary(); checkCompatibility();
@@ -590,6 +646,7 @@ function selectPart(partKey, part) {
 // does the actual filtering), backfilled by a targeted high-priority photo
 // fetch for the matches. Legacy categories still hit the live API directly.
 function runSearch(partKey, term) {
+  if (term) state.userSelected[partKey] = true; // searching is an explicit choice — stop pinning the default
   state.themeId[partKey] = null;
   state.themeName[partKey] = "";
   const ti = document.getElementById(`themeSearch-${partKey}`);
@@ -844,6 +901,7 @@ function addThemeHint(container, text) {
 }
 
 async function selectTheme(partKey, themeId, themeName) {
+  state.userSelected[partKey] = true; // picking/clearing a theme is an explicit choice
   const input    = document.getElementById(`themeSearch-${partKey}`);
   const dropdown = document.getElementById(`themeDropdown-${partKey}`);
 
@@ -953,6 +1011,12 @@ function checkCompatibility() {
 async function init() {
   buildUI();
 
+  // Fetch this build's 4 default parts directly by part_num — dispatched
+  // first so they win the shared apiFetch rate-limiter queue and render as
+  // soon as each resolves, independent of whatever page/category order the
+  // catalog or live API loads the rest of the list in. Not awaited here.
+  loadDefaultParts();
+
   // Offline metadata catalog: instant + complete when available (see
   // catalog.js). Resolves with empty arrays for any category it couldn't
   // fetch (no CORS, offline, old browser), which falls back to the
@@ -975,10 +1039,7 @@ async function init() {
         state.parts[type.key] = cached.map(p => annotatePart({ ...p }));
         rebuildGroups(type.key);
         state.nextUrl[type.key] = null;
-        if (!applyDefaultIfUnselected(type.key)) {
-          const visible = getVisibleParts(type.key);
-          state.selected[type.key] = visible[0] ?? null;
-        }
+        ensureSelection(type.key);
         renderSelector(type.key);
         renderPreview(); renderSummary();
       }
@@ -995,10 +1056,9 @@ async function init() {
     if (!state.usingCatalog[type.key]) {
       await fetchParts(type.key);
       await ensureMinimumVisible(type.key);
-      if (applyDefaultIfUnselected(type.key)) {
-        renderSelector(type.key);
-        renderPreview(); renderSummary(); checkCompatibility();
-      }
+      ensureSelection(type.key);
+      renderSelector(type.key);
+      renderPreview(); renderSummary(); checkCompatibility();
     }
   }
 
@@ -1048,7 +1108,7 @@ function buildUI() {
     const toggle = document.createElement("label");
     toggle.className = "standard-toggle";
     toggle.innerHTML = `
-      <input type="checkbox" id="standardToggle">
+      <input type="checkbox" id="standardToggle"${state.standardOnly ? " checked" : ""}>
       <span class="toggle-track"><span class="toggle-thumb"></span></span>
       <span class="toggle-label">Standard minifig only</span>`;
     previewCard.insertBefore(toggle, previewCard.querySelector(".btn-randomize"));
@@ -1059,6 +1119,7 @@ function buildUI() {
         state.subcat[t.key] = "All";
         const visible = getVisibleParts(t.key);
         if (!visible.find(p => p.part_num === state.selected[t.key]?.part_num)) {
+          state.userSelected[t.key] = true;
           state.selected[t.key] = visible[0] ?? null;
           if (state.selected[t.key]) prioritizeImage(t.key, state.selected[t.key]);
         }
@@ -1150,6 +1211,7 @@ function createSelectorCard(type) {
     card.querySelectorAll(".subcat-tab").forEach(b => b.classList.toggle("active", b.dataset.subcat === subcat));
     const visible = getVisibleParts(type.key);
     if (!visible.find(p => p.part_num === state.selected[type.key]?.part_num)) {
+      state.userSelected[type.key] = true;
       state.selected[type.key] = visible[0] ?? null;
       if (state.selected[type.key]) prioritizeImage(type.key, state.selected[type.key]);
     }
