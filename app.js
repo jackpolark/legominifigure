@@ -61,6 +61,17 @@ const STANDARD_PREFIXES = {
   hair: null, head: "3626", torso: "973", legs: "970",
 };
 
+// The part shown on first load, per slot, before the user picks anything
+// themselves. Applied whenever the part becomes available (catalog seed,
+// legacy fetch, or a later catalog upgrade) as long as the user hasn't
+// already made an explicit selection — see state.userSelected.
+const DEFAULT_PART_NUMS = {
+  hair:  "30167",         // Headgear Hat, Wide Brim Flat
+  head:  "3626pa3",       // Head — thin eyebrows/moustache/hair/sideburns print
+  torso: "973pb0391c01",  // Safari Shirt torso assembly
+  legs:  "970c00",        // Hips and Legs Plain
+};
+
 const SUBCATEGORIES = {
   hair: [
     { label: "Hair",    test: p => /^hair$/i.test(p._p.primary) },
@@ -211,6 +222,11 @@ const state = {
   // (from catalog.js), only photos stream in progressively.
   usingCatalog:    { hair: false, head: false, torso: false, legs: false },
   imageSweepDone:  { hair: false, head: false, torso: false, legs: false },
+
+  // True once the user has explicitly picked a part for that slot (thumb
+  // click, nav arrows, variant chip, randomize) — blocks DEFAULT_PART_NUMS
+  // from overriding their choice on a later catalog upgrade.
+  userSelected:    { hair: false, head: false, torso: false, legs: false },
 };
 
 const searchTimers = {};
@@ -353,6 +369,19 @@ function renderCountLabel(partKey) {
 }
 
 
+// If the user hasn't explicitly chosen a part for this slot yet and its
+// DEFAULT_PART_NUMS pick is present in state.parts, select it. Returns
+// whether it applied, so callers can skip their own fallback selection.
+function applyDefaultIfUnselected(partKey) {
+  if (state.userSelected[partKey]) return false;
+  const wanted = DEFAULT_PART_NUMS[partKey];
+  if (!wanted) return false;
+  const match = state.parts[partKey].find(p => p.part_num === wanted);
+  if (!match) return false;
+  state.selected[partKey] = match;
+  return true;
+}
+
 // ──── Offline Catalog Integration ──────────────────────────────────────────────
 // Seed a category straight from the offline metadata snapshot (instant, no
 // network) and kick off progressive, prioritized photo loading for it.
@@ -364,8 +393,10 @@ function seedFromCatalog(partKey, catParts) {
   rebuildGroups(partKey);
   state.nextUrl[partKey] = null; // metadata is already complete; only photos stream in
 
-  const visible = getVisibleParts(partKey);
-  state.selected[partKey] = visible[0] ?? null;
+  if (!applyDefaultIfUnselected(partKey)) {
+    const visible = getVisibleParts(partKey);
+    state.selected[partKey] = visible[0] ?? null;
+  }
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
   renderSelector(partKey);
   renderPreview(); renderSummary(); checkCompatibility();
@@ -392,6 +423,7 @@ function handleCatalogUpdate(partKey, info) {
   }
   if (changed) {
     rebuildGroups(partKey);
+    if (applyDefaultIfUnselected(partKey)) prioritizeImage(partKey, state.selected[partKey]);
     renderSelector(partKey);
     renderCountLabel(partKey);
   }
@@ -400,7 +432,9 @@ function handleCatalogUpdate(partKey, info) {
 // Switch a category from the live-API fallback over to the offline catalog
 // once its snapshot arrives, without discarding whatever the user was
 // already looking at (parts already fetched live keep their photos; the
-// current selection is preserved if it's still in the merged list).
+// current selection is preserved if it's still in the merged list — unless
+// the user hasn't chosen yet and the DEFAULT_PART_NUMS pick just became
+// available, in which case that takes over).
 function upgradeToCatalog(partKey, catParts) {
   if (state.usingCatalog[partKey] || !catParts?.length) return;
   const existingByNum = new Map(state.parts[partKey].map(p => [p.part_num, p]));
@@ -412,11 +446,13 @@ function upgradeToCatalog(partKey, catParts) {
   state.bgLoading[partKey] = false;
   rebuildGroups(partKey);
 
-  const stillSelected = state.selected[partKey] &&
-    state.parts[partKey].some(p => p.part_num === state.selected[partKey].part_num);
-  if (!stillSelected) {
-    const visible = getVisibleParts(partKey);
-    state.selected[partKey] = visible[0] ?? null;
+  if (!applyDefaultIfUnselected(partKey)) {
+    const stillSelected = state.selected[partKey] &&
+      state.parts[partKey].some(p => p.part_num === state.selected[partKey].part_num);
+    if (!stillSelected) {
+      const visible = getVisibleParts(partKey);
+      state.selected[partKey] = visible[0] ?? null;
+    }
   }
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
   renderSelector(partKey);
@@ -541,6 +577,7 @@ function prioritizeImage(partKey, part) {
 function selectPart(partKey, part) {
   const prev = state.selected[partKey];
   state.selected[partKey] = part;
+  state.userSelected[partKey] = true;
   // Only collapse the variant chip row when switching to a different mold —
   // picking a sibling variant should keep it expanded.
   if (!prev || prev._n?.baseId !== part._n?.baseId) state.variantExpanded[partKey] = false;
@@ -938,8 +975,10 @@ async function init() {
         state.parts[type.key] = cached.map(p => annotatePart({ ...p }));
         rebuildGroups(type.key);
         state.nextUrl[type.key] = null;
-        const visible = getVisibleParts(type.key);
-        state.selected[type.key] = visible[0] ?? null;
+        if (!applyDefaultIfUnselected(type.key)) {
+          const visible = getVisibleParts(type.key);
+          state.selected[type.key] = visible[0] ?? null;
+        }
         renderSelector(type.key);
         renderPreview(); renderSummary();
       }
@@ -956,6 +995,10 @@ async function init() {
     if (!state.usingCatalog[type.key]) {
       await fetchParts(type.key);
       await ensureMinimumVisible(type.key);
+      if (applyDefaultIfUnselected(type.key)) {
+        renderSelector(type.key);
+        renderPreview(); renderSummary(); checkCompatibility();
+      }
     }
   }
 
@@ -1173,6 +1216,7 @@ function randomize() {
     if (!parts.length) continue;
     const part = parts[Math.floor(Math.random() * parts.length)];
     state.selected[type.key] = part;
+    state.userSelected[type.key] = true;
     state.variantExpanded[type.key] = false;
     prioritizeImage(type.key, part);
   }
