@@ -374,7 +374,12 @@ function seedFromCatalog(partKey, catParts) {
 // Called when catalog.js learns about new part_nums, either from a periodic
 // CSV re-download or from reconciling a live API response.
 function handleCatalogUpdate(partKey, info) {
-  if (!info?.added?.length || !state.usingCatalog[partKey]) return;
+  if (!info?.added?.length) return;
+  // First time this category's offline snapshot becomes available (e.g. it
+  // was still downloading at startup and we started on the live-API
+  // fallback in the meantime) — switch it over instead of just appending.
+  if (!state.usingCatalog[partKey]) { upgradeToCatalog(partKey, Catalog.getParts(partKey)); return; }
+
   const known = new Set(state.parts[partKey].map(p => p.part_num));
   let changed = false;
   for (const entry of info.added) {
@@ -390,6 +395,33 @@ function handleCatalogUpdate(partKey, info) {
     renderSelector(partKey);
     renderCountLabel(partKey);
   }
+}
+
+// Switch a category from the live-API fallback over to the offline catalog
+// once its snapshot arrives, without discarding whatever the user was
+// already looking at (parts already fetched live keep their photos; the
+// current selection is preserved if it's still in the merged list).
+function upgradeToCatalog(partKey, catParts) {
+  if (state.usingCatalog[partKey] || !catParts?.length) return;
+  const existingByNum = new Map(state.parts[partKey].map(p => [p.part_num, p]));
+  state.parts[partKey] = catParts.map(p => existingByNum.get(p.part_num) ?? annotatePart({
+    ...p, part_img_url: Catalog.getImage(p.part_num) ?? null,
+  }));
+  state.usingCatalog[partKey] = true;
+  state.nextUrl[partKey] = null;
+  state.bgLoading[partKey] = false;
+  rebuildGroups(partKey);
+
+  const stillSelected = state.selected[partKey] &&
+    state.parts[partKey].some(p => p.part_num === state.selected[partKey].part_num);
+  if (!stillSelected) {
+    const visible = getVisibleParts(partKey);
+    state.selected[partKey] = visible[0] ?? null;
+  }
+  if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
+  renderSelector(partKey);
+  renderPreview(); renderSummary(); checkCompatibility();
+  startImageLoading(partKey);
 }
 
 

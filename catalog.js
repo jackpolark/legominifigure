@@ -220,15 +220,13 @@ const Catalog = (() => {
     const haveAny = Object.values(memCatalog).some(a => a.length);
 
     if (!haveAny) {
-      // First-ever visit (or cache expired past the stale grace period): fetch once,
-      // blocking the initial paint briefly, since there's nothing to show otherwise.
-      try {
-        const fresh = await downloadCatalog();
-        Object.assign(memCatalog, fresh);
-        await persistCatalog(fresh);
-      } catch (e) {
-        console.warn("Offline catalog unavailable, falling back to live API paging:", e);
-      }
+      // First-ever visit (or cache expired past the stale grace period): nothing
+      // to seed synchronously, so kick off the download in the background rather
+      // than blocking init() on it (the full CSV — every category, not just
+      // ours — can take several seconds to fetch+decompress+parse). app.js falls
+      // back to live-API paging for now and upgrades via onUpdate() once this
+      // resolves.
+      refreshInBackground();
     } else if (!meta || Date.now() - meta.fetchedAt > REFRESH_AFTER_MS) {
       refreshInBackground(); // don't block first paint
     }
