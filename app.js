@@ -41,7 +41,7 @@
    ============================================================ */
 
 // ──── Config ──────────────────────────────────────────────────────────────────
-const API_KEY       = "34e4c4ff2ec36a7a20f30f484a11f0af";
+const API_BASE      = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev";
 const PAGE_SIZE     = 100;
 const THEME_MAX_SETS = 20;
 const VARIANT_SHOW  = 10;   // chips shown before "show more"
@@ -246,7 +246,7 @@ const rateLimiter = (() => {
 
 async function apiFetch(url, retries = 0) {
   await rateLimiter();
-  const res = await fetch(url, { headers: { Authorization: `key ${API_KEY}` } });
+  const res = await fetch(url);
   if (res.status === 429) {
     const backoff = Math.min(8000, 1500 * (retries + 1));
     console.warn(`⏳ Rate limited – retrying in ${backoff}ms…`);
@@ -268,7 +268,7 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
 
   try {
     const fetchUrl = url ||
-      `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}&inc_color_details=0` +
+      `${API_BASE}/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}&inc_color_details=0` +
       (search ? `&search=${encodeURIComponent(search)}` : "");
 
     const data    = await apiFetch(fetchUrl);
@@ -429,7 +429,7 @@ async function loadDefaultParts() {
     const num = DEFAULT_PART_NUMS[type.key];
     if (!num) return;
     try {
-      const data = await apiFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(num)}/?inc_color_details=0`);
+      const data = await apiFetch(`${API_BASE}/api/v3/lego/parts/${encodeURIComponent(num)}/?inc_color_details=0`);
       if (!data?.part_num) return;
 
       let part = state.parts[type.key].find(p => p.part_num === data.part_num);
@@ -578,7 +578,7 @@ function startImageLoading(partKey) {
   // 1) Targeted fetch for whatever the default view actually needs — usually
   //    1-2 requests instead of blindly paginating from page 1 and hoping.
   const prefix = STANDARD_PREFIXES[partKey];
-  const targetedUrl = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}` +
+  const targetedUrl = `${API_BASE}/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}` +
     (prefix ? `&search=${encodeURIComponent(prefix)}` : "");
   queueImageTask(async () => {
     const data = await apiFetch(targetedUrl);
@@ -592,7 +592,7 @@ function startImageLoading(partKey) {
 
 async function sweepCategoryImages(partKey) {
   const type = PART_TYPES.find(t => t.key === partKey);
-  let url = `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`;
+  let url = `${API_BASE}/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`;
   while (url) {
     const data = await apiFetch(url);
     applyImageResults(partKey, data.results ?? []);
@@ -615,7 +615,7 @@ function flagPartsWithNoImage(partKey) {
 // user selects/navigates to a part whose image hasn't loaded yet.
 function prioritizeImage(partKey, part) {
   if (!state.usingCatalog[partKey] || part.part_img_url || part._noImage) return;
-  const url = `https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/`;
+  const url = `${API_BASE}/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/`;
   imageQueue.high.unshift(async () => {
     try {
       const data = await apiFetch(url);
@@ -669,7 +669,7 @@ function runSearch(partKey, term) {
     const type = PART_TYPES.find(t => t.key === partKey);
     queueImageTask(async () => {
       const data = await apiFetch(
-        `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}&search=${encodeURIComponent(term)}`
+        `${API_BASE}/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}&search=${encodeURIComponent(term)}`
       );
       applyImageResults(partKey, data.results ?? []);
     }, "high");
@@ -687,7 +687,7 @@ function startLiveReconciliation() {
       if (!state.usingCatalog[type.key]) continue;
       queueImageTask(async () => {
         const data = await apiFetch(
-          `https://rebrickable.com/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`
+          `${API_BASE}/api/v3/lego/parts/?part_cat_id=${type.catId}&page_size=${PAGE_SIZE}`
         );
         applyImageResults(type.key, data.results ?? []);
       }, "low");
@@ -706,7 +706,7 @@ async function loadThemesList() {
   }
 
   try {
-    let url = `https://rebrickable.com/api/v3/lego/themes/?page_size=1000`;
+    let url = `${API_BASE}/api/v3/lego/themes/?page_size=1000`;
     const all = [];
     while (url) {
       const data = await apiFetch(url);
@@ -754,7 +754,7 @@ async function loadThemeParts(partKey, themeId) {
 
   try {
     const setsData = await apiFetch(
-      `https://rebrickable.com/api/v3/lego/sets/?theme_id=${themeId}&page_size=${THEME_MAX_SETS}&ordering=-year`
+      `${API_BASE}/api/v3/lego/sets/?theme_id=${themeId}&page_size=${THEME_MAX_SETS}&ordering=-year`
     );
     const setNums = (setsData.results ?? []).map(s => s.set_num);
 
@@ -763,7 +763,7 @@ async function loadThemeParts(partKey, themeId) {
       renderThemeLoadingState(partKey, `Scanning set ${i + 1} / ${setNums.length}…`);
       try {
         const pd = await apiFetch(
-          `https://rebrickable.com/api/v3/lego/sets/${setNums[i]}/parts/?page_size=500`
+          `${API_BASE}/api/v3/lego/sets/${setNums[i]}/parts/?page_size=500`
         );
         for (const item of (pd.results ?? [])) {
           const p = item.part;
