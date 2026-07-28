@@ -213,6 +213,7 @@ const state = {
   search:          { hair: "", head: "", torso: "", legs: "" },
   subcat:          { hair: "All", head: "Standard", torso: "Standard", legs: "Legs" },
   standardOnly:    true,
+  color:           { hair: "All", head: "All", torso: "All", legs: "All" },
 
   allThemes:       [],  // full list from API
   themeId:         { hair: null, head: null, torso: null, legs: null },
@@ -716,6 +717,88 @@ function startLiveReconciliation() {
 }
 
 
+// ──── Color Filter ────────────────────────────────────────────────────────────
+// A part's official color(s) aren't a separate field in the offline catalog
+// (or the live API's part listing) — for these combo mold+print IDs, the
+// color is just whatever's written into the name ("Hips and Black Legs",
+// "...Yellow Neck, Red Bandana... Tan Arms..."). So the filter works by
+// matching Rebrickable's own official color names (fetched once) against
+// each part's name as whole words. Note this means a torso whose print just
+// mentions a color in passing (e.g. a red bandana) will show up under "Red"
+// even though the torso itself isn't red — the tradeoff for not requiring
+// per-part color-area data the catalog doesn't have.
+let COLOR_REGEXES = [];
+
+async function loadColorList() {
+  const cached = cacheGet("colors_v1");
+  let names = cached;
+
+  if (!names?.length) {
+    try {
+      let url = `${API_BASE}/api/v3/lego/colors/?page_size=1000`;
+      const all = [];
+      while (url) {
+        const data = await apiFetch(url);
+        all.push(...(data.results ?? []));
+        url = data.next;
+      }
+      names = [...new Set(all.map(c => c.name).filter(n => n && !n.startsWith("[")))];
+      cacheSet("colors_v1", names);
+    } catch (e) {
+      console.warn("Could not load color list:", e);
+      return;
+    }
+  }
+
+  // Longest name first so "Dark Red" claims its match before whatever else
+  // might otherwise be tried against the same text.
+  COLOR_REGEXES = names
+    .sort((a, b) => b.length - a.length)
+    .map(name => ({ name, re: new RegExp(`\\b${escapeRegex(name.toLowerCase())}\\b`) }));
+
+  // Options may have been computed (and cached) before this resolved, back
+  // when COLOR_REGEXES was still empty — force every slot to recompute now.
+  for (const key of Object.keys(colorOptionsCache)) colorOptionsCache[key].len = -1;
+  PART_TYPES.forEach(t => renderColorSelect(t.key));
+}
+
+const colorOptionsCache = { hair: { len: -1, opts: [] }, head: { len: -1, opts: [] }, torso: { len: -1, opts: [] }, legs: { len: -1, opts: [] } };
+
+function getColorOptions(partKey) {
+  const list = state.parts[partKey];
+  if (!COLOR_REGEXES.length) return [];
+  const cache = colorOptionsCache[partKey];
+  if (cache.len === list.length) return cache.opts;
+
+  const found = new Set();
+  for (const p of list) {
+    const name = p.name.toLowerCase();
+    for (const c of COLOR_REGEXES) {
+      if (c.re.test(name)) found.add(c.name);
+    }
+  }
+  const opts = [...found].sort();
+  colorOptionsCache[partKey] = { len: list.length, opts };
+  return opts;
+}
+
+function renderColorSelect(partKey) {
+  const select = document.getElementById(`colorSelect-${partKey}`);
+  if (!select) return;
+  const opts = getColorOptions(partKey);
+
+  // If the previously chosen color dropped out of the list (e.g. subcat
+  // changed), fall back to "All" rather than silently filtering on nothing.
+  if (state.color[partKey] !== "All" && !opts.includes(state.color[partKey])) {
+    state.color[partKey] = "All";
+  }
+
+  select.innerHTML = [`<option value="All">All colors</option>`,
+    ...opts.map(name => `<option value="${escapeHtml(name)}"${name === state.color[partKey] ? " selected" : ""}>${escapeHtml(name)}</option>`),
+  ].join("");
+}
+
+
 // ──── Theme Loading Chain ─────────────────────────────────────────────────────
 async function loadThemesList() {
   const cached = cacheGet("themes_v4");
@@ -1001,6 +1084,12 @@ function getVisibleParts(partKey) {
     if (rule) list = list.filter(rule.test);
   }
 
+  const color = state.color[partKey];
+  if (color !== "All") {
+    const entry = COLOR_REGEXES.find(c => c.name === color);
+    if (entry) list = list.filter(p => entry.re.test(p.name.toLowerCase()));
+  }
+
   // In catalog mode the search box filters the local metadata directly
   // instead of relying on a server round-trip for every keystroke.
   const term = state.search[partKey];
@@ -1103,8 +1192,9 @@ async function init() {
     else startBackgroundLoad(type.key);
   }
 
-  // Load themes in background (non-blocking, updates combos when ready)
+  // Load themes and colors in background (non-blocking, updates UI when ready)
   loadThemesList();
+  loadColorList();
 
   // Keep catching newly-added Rebrickable parts while the tab stays open.
   startLiveReconciliation();
@@ -1211,6 +1301,13 @@ function createSelectorCard(type) {
       <span class="theme-load-badge" id="themeLoadBadge-${type.key}" style="display:none">⏳</span>
     </div>
 
+    <div class="theme-row">
+      <span class="theme-row-label">🌈</span>
+      <select class="theme-select" id="colorSelect-${type.key}">
+        <option value="All">All colors</option>
+      </select>
+    </div>
+
     <div class="subcat-tabs" id="tabs-${type.key}">${tabsHtml}</div>
 
     <input type="text" class="search-input" id="search-${type.key}"
@@ -1242,6 +1339,19 @@ function createSelectorCard(type) {
     const subcat = btn.dataset.subcat;
     state.subcat[type.key] = subcat;
     card.querySelectorAll(".subcat-tab").forEach(b => b.classList.toggle("active", b.dataset.subcat === subcat));
+    const visible = getVisibleParts(type.key);
+    if (!visible.find(p => p.part_num === state.selected[type.key]?.part_num)) {
+      state.userSelected[type.key] = true;
+      state.selected[type.key] = visible[0] ?? null;
+      if (state.selected[type.key]) prioritizeImage(type.key, state.selected[type.key]);
+    }
+    renderSelector(type.key);
+    renderPreview(); renderSummary(); checkCompatibility();
+  });
+
+  // Color filter — independent per slot (e.g. a black torso with tan legs)
+  card.querySelector(`#colorSelect-${type.key}`).addEventListener("change", e => {
+    state.color[type.key] = e.target.value;
     const visible = getVisibleParts(type.key);
     if (!visible.find(p => p.part_num === state.selected[type.key]?.part_num)) {
       state.userSelected[type.key] = true;
@@ -1328,6 +1438,7 @@ function renderSelector(partKey) {
   const selected  = state.selected[partKey];
   const isLoading = state.loading[partKey];
 
+  renderColorSelect(partKey);
   renderCountLabel(partKey);
 
   const prevBtn = document.getElementById(`prev-${partKey}`);
