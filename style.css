@@ -73,7 +73,7 @@ body {
 
 /* ---- Main Layout ---- */
 .main {
-  max-width: 1100px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 24px 16px;
   display: flex;
@@ -180,6 +180,104 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+/* ---- Minifig Lookup Column ---- */
+.minifig-lookup-col {
+  flex: 0 0 240px;
+  position: sticky;
+  top: 24px;
+}
+.minifig-lookup-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  text-align: center;
+  border: 3px solid var(--blue);
+}
+.minifig-search-wrap {
+  position: relative;
+  margin-bottom: 12px;
+}
+.minifig-lookup-result {
+  margin-bottom: 12px;
+}
+.minifig-lookup-img {
+  max-width: 100%;
+  max-height: 140px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  margin-bottom: 8px;
+}
+.minifig-lookup-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-900);
+  margin-bottom: 10px;
+  line-height: 1.3;
+}
+.minifig-lookup-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.minifig-lookup-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1.5px solid var(--blue);
+  background: var(--white);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Fredoka', sans-serif;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.minifig-lookup-btn:hover:not(:disabled) {
+  background: var(--blue);
+  color: var(--white);
+}
+.minifig-lookup-btn:disabled {
+  border-color: var(--gray-300);
+  color: var(--gray-500);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.minifig-lookup-btn.apply-all {
+  background: var(--blue);
+  color: var(--white);
+  margin-top: 4px;
+}
+.minifig-lookup-btn.apply-all:hover:not(:disabled) {
+  background: var(--blue-dark);
+}
+.minifig-lookup-hint {
+  font-size: 11px;
+  color: var(--gray-500);
+  font-style: italic;
+  line-height: 1.4;
+}
+.minifig-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+.minifig-option img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.minifig-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Selectors Column ---- */
@@ -458,6 +556,11 @@ body {
   }
   .summary-item {
     flex: 1 1 45%;
+  }
+  .minifig-lookup-col {
+    flex: none;
+    width: 100%;
+    position: static;
   }
 }
 /* ---- Subcategory Tabs ---- */

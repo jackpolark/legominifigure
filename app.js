@@ -906,6 +906,25 @@ async function getThemeMinifigs(themeId, onProgress) {
   return result;
 }
 
+// A minifig's own parts breakdown is effectively permanent and independent
+// of whatever theme/slot asked for it — cache it once, by fig_num alone, so
+// it's never re-fetched again after the first time it's seen anywhere
+// (theme browsing, the minifig lookup panel, or a different theme entirely
+// that happens to reuse the same minifig).
+async function getMinifigParts(figNum) {
+  const cacheKey = `minifig_parts_${figNum}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+  try {
+    const fd = await apiFetch(`${API_BASE}/api/v3/lego/minifigs/${figNum}/parts/?page_size=50`);
+    const parts = (fd.results ?? []).map(item => item.part).filter(Boolean);
+    cacheSet(cacheKey, parts);
+    return parts;
+  } catch {
+    return []; // don't cache a fetch failure — worth retrying later
+  }
+}
+
 async function loadThemeParts(partKey, themeId) {
   const type     = PART_TYPES.find(t => t.key === partKey);
   const cacheKey = `theme_${themeId}_${type.catId}`;
@@ -925,23 +944,7 @@ async function loadThemeParts(partKey, themeId) {
     const partsMap = new Map();
     for (let i = 0; i < figNums.length; i++) {
       renderThemeLoadingState(partKey, `Fetching minifig ${i + 1} / ${figNums.length}…`);
-
-      // A minifig's own parts breakdown is effectively permanent, and is the
-      // same regardless of which category/theme/slot asked for it — cache
-      // it once, by fig_num alone, so it's never re-fetched again after the
-      // first time it's seen (whether that's this theme or a different one).
-      const figCacheKey = `minifig_parts_${figNums[i]}`;
-      let figParts = cacheGet(figCacheKey);
-      if (!figParts) {
-        try {
-          const fd = await apiFetch(`${API_BASE}/api/v3/lego/minifigs/${figNums[i]}/parts/?page_size=50`);
-          figParts = (fd.results ?? []).map(item => item.part).filter(Boolean);
-          cacheSet(figCacheKey, figParts);
-        } catch {
-          figParts = []; // don't cache a fetch failure — worth retrying later
-        }
-      }
-
+      const figParts = await getMinifigParts(figNums[i]);
       for (const p of figParts) {
         if (p?.part_img_url && p.part_cat_id === type.catId && !partsMap.has(p.part_num)) {
           partsMap.set(p.part_num, p);
@@ -977,6 +980,181 @@ function renderThemeLoadingState(partKey, msg) {
   const existing = strip.querySelector(".theme-load-msg");
   if (existing) { existing.textContent = msg; return; }
   strip.innerHTML = `<div class="theme-load-msg">${escapeHtml(msg)}</div>`;
+}
+
+
+// ──── Minifig Lookup Panel ──────────────────────────────────────────────────
+// Search for a specific minifigure by name, then jump straight to its
+// headwear/head/torso/legs in the corresponding selector on the left.
+const minifigLookup = { fig: null, categorized: {} }; // categorized: { hair: part|null, head:..., torso:..., legs:... }
+let minifigSearchToken = 0; // guards against an older search resolving after a newer one
+
+function buildMinifigLookupCard() {
+  const input    = document.getElementById("minifigSearchInput");
+  const dropdown = document.getElementById("minifigSearchDropdown");
+  if (!input || !dropdown) return;
+
+  input.addEventListener("input", () => {
+    clearTimeout(searchTimers.minifigLookup);
+    const term = input.value.trim();
+    if (!term) { dropdown.style.display = "none"; minifigSearchToken++; return; }
+    searchTimers.minifigLookup = setTimeout(() => searchMinifigsUI(term), 400);
+  });
+
+  input.addEventListener("focus", () => {
+    if (input.value.trim() && dropdown.innerHTML) dropdown.style.display = "block";
+  });
+
+  document.addEventListener("click", e => {
+    if (e.target !== input && !dropdown.contains(e.target)) dropdown.style.display = "none";
+  });
+}
+
+async function searchMinifigsUI(term) {
+  const dropdown = document.getElementById("minifigSearchDropdown");
+  if (!dropdown) return;
+  const myToken = ++minifigSearchToken;
+
+  dropdown.innerHTML = `<div class="theme-hint">Searching…</div>`;
+  dropdown.style.display = "block";
+
+  try {
+    const data = await apiFetch(`${API_BASE}/api/v3/lego/minifigs/?search=${encodeURIComponent(term)}&page_size=8`);
+    if (myToken !== minifigSearchToken) return; // a newer search superseded this one
+
+    const results = data.results ?? [];
+    dropdown.innerHTML = "";
+    if (!results.length) {
+      dropdown.innerHTML = `<div class="theme-hint">No minifigures found</div>`;
+      return;
+    }
+    for (const fig of results) {
+      const el = document.createElement("div");
+      el.className = "theme-option minifig-option";
+      el.innerHTML = `
+        <img src="${fig.set_img_url ?? ""}" alt="" loading="lazy">
+        <span>${escapeHtml(fig.name)}</span>`;
+      el.addEventListener("click", () => selectMinifigForLookup(fig));
+      dropdown.appendChild(el);
+    }
+  } catch (e) {
+    if (myToken !== minifigSearchToken) return;
+    dropdown.innerHTML = `<div class="theme-hint">Search failed — try again</div>`;
+  }
+}
+
+async function selectMinifigForLookup(fig) {
+  const dropdown = document.getElementById("minifigSearchDropdown");
+  const input    = document.getElementById("minifigSearchInput");
+  const result   = document.getElementById("minifigLookupResult");
+  const hint     = document.getElementById("minifigLookupHint");
+  if (dropdown) dropdown.style.display = "none";
+  if (input) input.value = fig.name;
+  if (result) result.style.display = "none";
+  if (hint) { hint.style.display = "block"; hint.textContent = "Loading parts…"; }
+
+  const rawParts = await getMinifigParts(fig.set_num);
+
+  const categorized = {};
+  for (const type of PART_TYPES) {
+    categorized[type.key] = rawParts.find(p => p?.part_img_url && p.part_cat_id === type.catId) ?? null;
+  }
+
+  minifigLookup.fig = fig;
+  minifigLookup.categorized = categorized;
+  renderMinifigLookupResult();
+}
+
+function renderMinifigLookupResult() {
+  const fig     = minifigLookup.fig;
+  const result  = document.getElementById("minifigLookupResult");
+  const hint    = document.getElementById("minifigLookupHint");
+  const img     = document.getElementById("minifigLookupImg");
+  const name    = document.getElementById("minifigLookupName");
+  const buttons = document.getElementById("minifigLookupButtons");
+  if (!fig || !result || !img || !name || !buttons) return;
+
+  img.src = fig.set_img_url ?? "";
+  img.alt = fig.name;
+  name.textContent = fig.name;
+
+  buttons.innerHTML = "";
+  let anyMatch = false;
+  for (const type of PART_TYPES) {
+    const part = minifigLookup.categorized[type.key];
+    if (part) anyMatch = true;
+    const btn = document.createElement("button");
+    btn.className = "minifig-lookup-btn";
+    btn.disabled = !part;
+    btn.innerHTML = `${type.icon} ${part ? `Use ${type.label}` : `No ${type.label.toLowerCase()}`}`;
+    if (part) btn.addEventListener("click", () => applyMinifigPart(type.key));
+    buttons.appendChild(btn);
+  }
+
+  const allBtn = document.createElement("button");
+  allBtn.className = "minifig-lookup-btn apply-all";
+  allBtn.disabled = !anyMatch;
+  allBtn.textContent = "✨ Use All Parts";
+  allBtn.addEventListener("click", applyAllMinifigParts);
+  buttons.appendChild(allBtn);
+
+  result.style.display = "block";
+  if (hint) hint.style.display = "none";
+}
+
+// Applies one part from the looked-up minifig to a slot. Minifig-parts
+// responses already include full part metadata, so no extra fetch is needed
+// even if this part_num isn't already in that slot's currently loaded list.
+// Clears whatever would otherwise hide it (subcategory, color filter, an
+// active theme) and turns off the global "Standard minifig only" toggle if
+// the part doesn't match this slot's standard prefix — the point of this
+// panel is that the part actually becomes visible, not just technically
+// selected somewhere off-screen.
+function applyMinifigPart(partKey, { syncStandardToggle = true } = {}) {
+  const part = minifigLookup.categorized[partKey];
+  if (!part) return;
+
+  if (!state.parts[partKey].some(p => p.part_num === part.part_num)) {
+    state.parts[partKey] = [annotatePart({ ...part }), ...state.parts[partKey]];
+    rebuildGroups(partKey);
+  }
+
+  state.subcat[partKey] = "All";
+  state.color[partKey] = "All";
+  if (state.themeId[partKey] !== null) {
+    state.themeId[partKey] = null;
+    state.themeName[partKey] = "";
+    const ti = document.getElementById(`themeSearch-${partKey}`);
+    if (ti) ti.value = "";
+  }
+
+  const prefix = STANDARD_PREFIXES[partKey];
+  const turnedStandardOff = state.standardOnly && prefix && !part.part_num.startsWith(prefix);
+  if (turnedStandardOff) state.standardOnly = false;
+
+  const match = state.parts[partKey].find(p => p.part_num === part.part_num);
+  selectPart(partKey, match);
+
+  if (turnedStandardOff && syncStandardToggle) {
+    const toggle = document.getElementById("standardToggle");
+    if (toggle) toggle.checked = false;
+    PART_TYPES.forEach(t => { if (t.key !== partKey) renderSelector(t.key); });
+  }
+
+  document.querySelector(`#strip-${partKey} .part-thumb.selected`)
+    ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+}
+
+function applyAllMinifigParts() {
+  for (const type of PART_TYPES) {
+    if (minifigLookup.categorized[type.key]) applyMinifigPart(type.key, { syncStandardToggle: false });
+  }
+  // Reflect the toggle once across every card instead of once per part.
+  const toggle = document.getElementById("standardToggle");
+  if (toggle && toggle.checked !== state.standardOnly) {
+    toggle.checked = state.standardOnly;
+    PART_TYPES.forEach(t => renderSelector(t.key));
+  }
 }
 
 
@@ -1333,6 +1511,7 @@ function buildUI() {
   }
 
   document.getElementById("randomizeBtn").addEventListener("click", randomize);
+  buildMinifigLookupCard();
 
   // Global click: close any open theme dropdown
   document.addEventListener("click", e => {

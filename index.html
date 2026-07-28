@@ -40,6 +40,26 @@
     <section class="selectors-col" id="selectorsCol">
       <!-- JS will generate selector cards here -->
     </section>
+
+    <!-- Minifig Lookup Column -->
+    <aside class="minifig-lookup-col">
+      <div class="minifig-lookup-card">
+        <h3 class="preview-title">Find By Minifigure</h3>
+        <div class="minifig-search-wrap">
+          <input type="text" id="minifigSearchInput" class="theme-search-input" autocomplete="off"
+                 spellcheck="false" placeholder="Search minifigure name…">
+          <div class="theme-dropdown" id="minifigSearchDropdown" style="display:none"></div>
+        </div>
+        <div class="minifig-lookup-result" id="minifigLookupResult" style="display:none">
+          <img class="minifig-lookup-img" id="minifigLookupImg" alt="">
+          <div class="minifig-lookup-name" id="minifigLookupName"></div>
+          <div class="minifig-lookup-buttons" id="minifigLookupButtons"></div>
+        </div>
+        <div class="minifig-lookup-hint" id="minifigLookupHint">
+          Search for a minifigure to jump straight to its headwear, head, torso, or legs in the selectors on the left.
+        </div>
+      </div>
+    </aside>
   </main>
 
   <footer class="footer">
