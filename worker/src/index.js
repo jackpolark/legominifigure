@@ -52,6 +52,26 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    // Bulk parts CSV (catalog.js): proxied so the browser gets a same-site
+    // CORS response instead of hitting cdn.rebrickable.com directly, and so
+    // Cloudflare's edge cache absorbs repeat downloads across visitors —
+    // this file only changes once a day, so there's no reason every visitor
+    // (or every page reload during dev) should re-pull it from origin.
+    if (url.pathname === "/catalog/parts.csv.gz") {
+      const upstream = await fetch("https://cdn.rebrickable.com/media/downloads/parts.csv.gz", {
+        cf: { cacheEverything: true, cacheTtl: 43200 },
+      });
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          ...headers,
+          "Content-Type": upstream.headers.get("Content-Type") ?? "application/gzip",
+          "Cache-Control": "public, max-age=43200",
+        },
+      });
+    }
+
     if (!url.pathname.startsWith("/api/v3/lego/")) {
       return new Response("Not found", { status: 404, headers });
     }

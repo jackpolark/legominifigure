@@ -2,8 +2,12 @@
    OFFLINE PARTS CATALOG
    ============================================================
    Rebrickable publishes a full CSV dump of every LEGO part
-   (updated daily) with no rate limit, at:
-     https://cdn.rebrickable.com/media/downloads/parts.csv.gz
+   (updated daily), fetched through our Cloudflare Worker proxy
+   rather than cdn.rebrickable.com directly — the CDN doesn't
+   reliably grant this browser CORS, and routing it through the
+   Worker also means Cloudflare's edge caches the (large, only
+   changes once/day) file, so repeat visitors and dev reloads
+   don't each pull a fresh copy from Rebrickable's origin.
 
    On first visit we download + decompress that file in the
    browser, filter it down to our 4 categories (headwear, head,
@@ -17,10 +21,10 @@
    (skeleton → photo) instead of a blocker for showing parts at
    all. Image URLs are cached in IndexedDB too, once learned.
 
-   If the CSV can't be fetched (e.g. no CORS from this browser,
-   offline, or an old browser without DecompressionStream), init()
-   simply resolves with empty arrays and app.js falls back to the
-   original live-API pagination path for that category.
+   If the CSV can't be fetched (e.g. offline, or an old browser
+   without DecompressionStream), init() simply resolves with empty
+   arrays and app.js falls back to the live-API pagination path
+   for that category (capped — see MAX_BACKGROUND_PAGES in app.js).
    ============================================================ */
 
 const Catalog = (() => {
@@ -30,7 +34,7 @@ const Catalog = (() => {
   const STORE_IMAGES  = "images";
   const STORE_META    = "meta";
 
-  const CSV_URL = "https://cdn.rebrickable.com/media/downloads/parts.csv.gz";
+  const CSV_URL = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev/catalog/parts.csv.gz";
   const CATEGORY_IDS = { hair: 65, head: 59, torso: 60, legs: 61 };
   const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;      // re-download once a day
   const USE_STALE_UP_TO_MS = 7 * REFRESH_AFTER_MS;   // but keep using old data for a week if refresh fails

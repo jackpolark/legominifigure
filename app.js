@@ -47,6 +47,7 @@ const THEME_MAX_SETS = 20;
 const VARIANT_SHOW  = 10;   // chips shown before "show more"
 const MIN_VISIBLE   = 20;   // minimum parts per slot before background kicks in
 const MIN_EXTRA_PAGES = 8;  // max extra pages to fetch for minimum-visible guarantee
+const MAX_BACKGROUND_PAGES = 50; // hard ceiling on live-API pagination if the offline catalog is unavailable
 
 const PART_TYPES = [
   { key: "hair",  catId: 65, label: "Headwear", icon: "👒" },
@@ -235,10 +236,14 @@ let openComboKey = null;
 
 
 // ──── Rate Limiter ────────────────────────────────────────────────────────────
+// Shared by every apiFetch() call (single-part lookups, category pages,
+// image loads) so the whole session — not just each call site individually —
+// stays under ~1 request every 1.25s to Rebrickable, with margin below their
+// documented ~1 req/sec limit.
 const rateLimiter = (() => {
   let last = 0;
   return async () => {
-    const wait = Math.max(0, 1100 - (Date.now() - last));
+    const wait = Math.max(0, 1250 - (Date.now() - last));
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     last = Date.now();
   };
@@ -337,15 +342,22 @@ async function ensureMinimumVisible(partKey) {
 
 
 // ──── Background Eager Loading ────────────────────────────────────────────────
+// Only runs for a category the offline catalog couldn't cover (see init()) —
+// normally that means catalog.js failed entirely (offline, ancient browser),
+// so this is a rare fallback, not the common path. MAX_BACKGROUND_PAGES is a
+// hard ceiling so that fallback can't turn into thousands of live-API
+// requests in one session regardless of how large the category is.
 async function startBackgroundLoad(partKey) {
   if (state.bgLoading[partKey]) return;
   state.bgLoading[partKey] = true;
   const type = PART_TYPES.find(t => t.key === partKey);
 
   try {
-    while (state.nextUrl[partKey]) {
+    let pages = 0;
+    while (state.nextUrl[partKey] && pages < MAX_BACKGROUND_PAGES) {
       if (state.search[partKey]) break;   // abort if user is searching
       await fetchParts(partKey, "", true, state.nextUrl[partKey]);
+      pages++;
     }
 
     // Cache full list once complete
