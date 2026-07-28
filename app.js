@@ -289,6 +289,14 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
       (search ? `&search=${encodeURIComponent(search)}` : "");
 
     const data    = await apiFetch(fetchUrl);
+
+    // The offline catalog can finish loading and switch this category over
+    // (see upgradeToCatalog) while this legacy live-API request was still in
+    // flight. Applying these results now would clobber the catalog's full
+    // list with a single stale page and reintroduce a real nextUrl — the
+    // catalog is strictly better data, so just drop this response.
+    if (state.usingCatalog[partKey]) return;
+
     const results = (data.results ?? []).filter(p => p.part_img_url).map(annotatePart);
 
     if (append) {
@@ -489,6 +497,12 @@ function seedFromCatalog(partKey, catParts) {
   rebuildGroups(partKey);
   state.nextUrl[partKey] = null; // metadata is already complete; only photos stream in
 
+  // The full list just replaced whatever was there before (e.g. just the
+  // lone default part from loadDefaultParts) — re-arm the initial-position
+  // jump so it lands on the real index in this list, not wherever that
+  // earlier, much shorter render happened to leave it.
+  state.scrolledInitial[partKey] = false;
+
   ensureSelection(partKey);
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
   renderSelector(partKey);
@@ -536,6 +550,10 @@ function upgradeToCatalog(partKey, catParts) {
   state.nextUrl[partKey] = null;
   state.bgLoading[partKey] = false;
   rebuildGroups(partKey);
+
+  // See the matching comment in seedFromCatalog — this list just replaced
+  // whatever the legacy live-API fallback had, so re-arm the position jump.
+  state.scrolledInitial[partKey] = false;
 
   ensureSelection(partKey);
   if (state.selected[partKey]) prioritizeImage(partKey, state.selected[partKey]);
