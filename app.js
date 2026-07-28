@@ -74,7 +74,7 @@ const DEFAULT_PART_NUMS = {
   hair:  "30167",           // BrickLink 30167 — Headgear Hat, Wide Brim Flat (exact match)
   head:  "3626bpr0045",     // BrickLink 3626pa3 — moustache/black bangs/striped sideburns print
   torso: "973c26h01pr0391", // BrickLink 973pb0391c01 — yellow neck/red bandana/gun print, tan arms
-  legs:  "970c01",          // BrickLink 970c00 — closest Rebrickable has; no standalone plain-black entry exists there
+  legs:  "970c03",          // Hips and Black Legs (Rebrickable's own black variant)
 };
 
 const SUBCATEGORIES = {
@@ -956,8 +956,13 @@ async function selectTheme(partKey, themeId, themeName) {
 
 // ──── Filtering ───────────────────────────────────────────────────────────────
 // Ranked local search: exact part_num > part_num prefix > name prefix >
-// word-boundary match > plain substring. Runs instantly over the full
-// in-memory catalog — no network round-trip per keystroke.
+// word-boundary match > plain substring > every query word found somewhere
+// in the name (any order) > most query words found. That last pair of tiers
+// is what makes multi-word queries useful — e.g. "hips and legs" should
+// still find "Hips and Black Legs" and "Hips and Nougat Legs" even though
+// the exact phrase never appears verbatim (the color name splits it up).
+// Runs instantly over the full in-memory catalog — no network round-trip
+// per keystroke.
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 function searchScore(part, q) {
@@ -965,9 +970,17 @@ function searchScore(part, q) {
   const num  = part.part_num.toLowerCase();
   if (num === q) return 0;
   if (num.startsWith(q)) return 1;
-  if (name.startsWith(q)) return 2;
-  if (new RegExp(`\\b${escapeRegex(q)}`).test(name)) return 3;
-  if (name.includes(q) || num.includes(q)) return 4;
+  if (name === q) return 2;
+  if (name.startsWith(q)) return 3;
+  if (new RegExp(`\\b${escapeRegex(q)}`).test(name)) return 4;
+  if (name.includes(q) || num.includes(q)) return 5;
+
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    const matched = words.filter(w => name.includes(w) || num.includes(w)).length;
+    if (matched === words.length) return 6;
+    if (matched > 0) return 6 + (words.length - matched);
+  }
   return -1;
 }
 
