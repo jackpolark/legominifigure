@@ -66,11 +66,15 @@ const STANDARD_PREFIXES = {
 // themselves. Applied whenever the part becomes available (catalog seed,
 // legacy fetch, or a later catalog upgrade) as long as the user hasn't
 // already made an explicit selection — see state.userSelected.
+// These are Rebrickable's own part_num values, not BrickLink's — the two
+// catalogs use different numbering schemes and the API only understands
+// its own. Each was cross-checked against Rebrickable's external_ids.BrickLink
+// field to find the equivalent (see corresponding BrickLink id in comments).
 const DEFAULT_PART_NUMS = {
-  hair:  "30167",         // Headgear Hat, Wide Brim Flat
-  head:  "3626pa3",       // Head — thin eyebrows/moustache/hair/sideburns print
-  torso: "973pb0391c01",  // Safari Shirt torso assembly
-  legs:  "970c00",        // Hips and Legs Plain
+  hair:  "30167",           // BrickLink 30167 — Headgear Hat, Wide Brim Flat (exact match)
+  head:  "3626bpr0045",     // BrickLink 3626pa3 — moustache/black bangs/striped sideburns print
+  torso: "973c26h01pr0391", // BrickLink 973pb0391c01 — yellow neck/red bandana/gun print, tan arms
+  legs:  "970c01",          // BrickLink 970c00 — closest Rebrickable has; no standalone plain-black entry exists there
 };
 
 const SUBCATEGORIES = {
