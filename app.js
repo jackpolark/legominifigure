@@ -233,6 +233,13 @@ const state = {
   // click, nav arrows, variant chip, randomize) — blocks DEFAULT_PART_NUMS
   // from overriding their choice on a later catalog upgrade.
   userSelected:    { hair: false, head: false, torso: false, legs: false },
+
+  // True once the strip has been jumped to the initial selection without
+  // animation — see renderSelector(). Without this, the strip starts
+  // scrolled to whatever sorts first and the first prev/next click has to
+  // smooth-scroll across the entire (often thousands-long) list to reach
+  // the pinned default, which is what was freezing the page.
+  scrolledInitial: { hair: false, head: false, torso: false, legs: false },
 };
 
 const searchTimers = {};
@@ -1458,6 +1465,7 @@ function renderSelector(partKey) {
     strip.innerHTML = `<div class="empty-msg">${escapeHtml(msg)}</div>`;
   }
 
+  let selectedThumb = null;
   for (const part of visible) {
     const isSelected = selected?.part_num === part.part_num;
     const isStd      = isStandardPart(partKey, part);
@@ -1485,6 +1493,18 @@ function renderSelector(partKey) {
 
     thumb.addEventListener("click", () => selectPart(partKey, part));
     strip.appendChild(thumb);
+    if (isSelected) selectedThumb = thumb;
+  }
+
+  // Jump the strip to the initial selection once, instantly — see
+  // state.scrolledInitial for why. .part-strip has CSS scroll-behavior:
+  // smooth, which "auto" would otherwise still respect (animating the huge
+  // jump), so it's overridden inline for just this one call.
+  if (!state.scrolledInitial[partKey] && selectedThumb) {
+    strip.style.scrollBehavior = "auto";
+    selectedThumb.scrollIntoView({ behavior: "auto", block: "nearest", inline: "center" });
+    strip.style.scrollBehavior = "";
+    state.scrolledInitial[partKey] = true;
   }
 
   if (isLoading || state.themeLoading[partKey]) {
