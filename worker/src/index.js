@@ -61,13 +61,27 @@ export default {
       headers: { Authorization: `key ${env.REBRICKABLE_API_KEY}` },
     });
 
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: {
-        ...headers,
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
-        "Cache-Control": "public, max-age=60",
-      },
-    });
+    const contentType = upstream.headers.get("Content-Type") ?? "";
+    const responseHeaders = {
+      ...headers,
+      "Content-Type": contentType || "application/json",
+      "Cache-Control": "public, max-age=60",
+    };
+
+    // Rebrickable's list endpoints return absolute rebrickable.com URLs in
+    // "next"/"previous". The browser has no key and can't cross-origin fetch
+    // rebrickable.com directly, so rewrite those to point back through this
+    // Worker or every page past the first would fail.
+    if (contentType.includes("application/json")) {
+      const data = await upstream.json();
+      for (const field of ["next", "previous"]) {
+        if (typeof data[field] === "string") {
+          data[field] = data[field].replace("https://rebrickable.com", url.origin);
+        }
+      }
+      return new Response(JSON.stringify(data), { status: upstream.status, headers: responseHeaders });
+    }
+
+    return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   },
 };

@@ -95,7 +95,7 @@ const SUBCATEGORIES = {
     { label: "Other",     test: () => true },
   ],
   legs: [
-    { label: "Legs",     test: p => /hips and legs/i.test(p.name) },
+    { label: "Legs",     test: p => /hips and .*legs/i.test(p.name) },
     { label: "Skirt",    test: p => /skirt/i.test(p.name) },
     { label: "Minidoll", test: p => /minidoll/i.test(p.name) },
     { label: "Other",    test: () => true },
@@ -292,6 +292,10 @@ async function fetchParts(partKey, search = "", append = false, url = null) {
       } else {
         ensureSelection(partKey);
       }
+    } else if (!state.selected[partKey]) {
+      // Nothing matched the pinned default/active subcat on earlier pages —
+      // re-check now that this page added more parts to choose from.
+      ensureSelection(partKey);
     }
   } catch (err) {
     console.error(`Error fetching ${partKey}:`, err);
