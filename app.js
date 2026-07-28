@@ -1513,6 +1513,11 @@ function buildUI() {
   document.getElementById("randomizeBtn").addEventListener("click", randomize);
   buildMinifigLookupCard();
 
+  document.getElementById("summaryList")?.addEventListener("click", e => {
+    const btn = e.target.closest(".bricklink-btn");
+    if (btn) openOnBrickLink(btn.dataset.part);
+  });
+
   // Global click: close any open theme dropdown
   document.addEventListener("click", e => {
     if (!openComboKey) return;
@@ -1874,9 +1879,34 @@ function renderSummary() {
     item.innerHTML = `
       <span>${type.icon}</span>
       <span class="summary-text">${escapeHtml(name)}</span>
-      ${bp.length ? `<span class="summary-badge">${escapeHtml(bp.join(" · "))}</span>` : ""}`;
+      ${bp.length ? `<span class="summary-badge">${escapeHtml(bp.join(" · "))}</span>` : ""}
+      ${part ? `<button class="bricklink-btn" data-part="${escapeHtml(part.part_num)}" title="Find this part on BrickLink">🔗</button>` : ""}`;
     list.appendChild(item);
   }
+}
+
+// Rebrickable's own part_num isn't BrickLink's numbering (see the
+// DEFAULT_PART_NUMS comment) — the mapping lives in external_ids.BrickLink,
+// which isn't in the offline catalog (only the live per-part endpoint has
+// it), so it's resolved on demand and cached per part_num.
+async function openOnBrickLink(partNum) {
+  const cacheKey = `bricklink_id_${partNum}`;
+  let blNum = cacheGet(cacheKey);
+  if (blNum === null) {
+    try {
+      const data = await apiFetch(`${API_BASE}/api/v3/lego/parts/${encodeURIComponent(partNum)}/`);
+      blNum = data?.external_ids?.BrickLink?.[0] ?? "";
+    } catch (e) {
+      console.warn(`Could not resolve BrickLink id for ${partNum}:`, e);
+      blNum = "";
+    }
+    cacheSet(cacheKey, blNum);
+  }
+
+  const url = blNum
+    ? `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${encodeURIComponent(blNum)}`
+    : `https://www.bricklink.com/v2/search.page?q=${encodeURIComponent(partNum)}`;
+  window.open(url, "_blank", "noopener");
 }
 
 

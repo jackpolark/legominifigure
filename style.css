@@ -181,6 +181,24 @@ body {
   white-space: nowrap;
   flex: 1;
 }
+.bricklink-btn {
+  flex-shrink: 0;
+  border: none;
+  background: var(--gray-200);
+  border-radius: 5px;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.bricklink-btn:hover {
+  background: var(--yellow);
+}
 
 /* ---- Minifig Lookup Column ---- */
 .minifig-lookup-col {
