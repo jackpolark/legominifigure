@@ -43,7 +43,13 @@
 // ──── Config ──────────────────────────────────────────────────────────────────
 const API_BASE      = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev";
 const PAGE_SIZE     = 100;
-const THEME_MAX_SETS = 20;
+// Recency-ordered cap on sets scanned per theme (see getThemeMinifigs). Not
+// every set in a huge theme (Star Wars alone has 1000+) — that would take
+// tens of minutes at the rate limit — but since themes reuse the same
+// minifigs across many sets, 200 recent sets already surfaces the large
+// majority of a theme's distinct minifigs, and results are cached per-theme
+// and per-minifig so this cost is paid at most once.
+const THEME_MAX_SETS = 200;
 const VARIANT_SHOW  = 10;   // chips shown before "show more"
 const MIN_VISIBLE   = 20;   // minimum parts per slot before background kicks in
 const MIN_EXTRA_PAGES = 8;  // max extra pages to fetch for minimum-visible guarantee
@@ -866,6 +872,40 @@ function refreshAllThemeCombos() {
   }
 }
 
+// Unique minifig fig_nums used across a theme's sets. Independent of which
+// part category is being filtered — the set→minifig relationship is the
+// same regardless — so selecting the same theme for multiple slots only
+// scans the theme's sets once. Cached per-theme since this almost never
+// changes.
+async function getThemeMinifigs(themeId, onProgress) {
+  const cacheKey = `theme_minifigs_${themeId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  onProgress?.("Fetching sets…");
+  const setsData = await apiFetch(
+    `${API_BASE}/api/v3/lego/sets/?theme_id=${themeId}&page_size=${THEME_MAX_SETS}&ordering=-year`
+  );
+  const setNums = (setsData.results ?? []).map(s => s.set_num);
+
+  // Per-set minifig lists (a handful of entries each) rather than each
+  // set's full parts inventory (hundreds of mostly-irrelevant bricks) — much
+  // less data to pull, and minifigs recur constantly across a theme's sets
+  // so the unique count below is usually far smaller than setNums.length.
+  const figNums = new Set();
+  for (let i = 0; i < setNums.length; i++) {
+    onProgress?.(`Scanning set ${i + 1} / ${setNums.length}…`);
+    try {
+      const md = await apiFetch(`${API_BASE}/api/v3/lego/sets/${setNums[i]}/minifigs/?page_size=100`);
+      for (const fig of (md.results ?? [])) figNums.add(fig.set_num);
+    } catch {}
+  }
+
+  const result = [...figNums];
+  cacheSet(cacheKey, result);
+  return result;
+}
+
 async function loadThemeParts(partKey, themeId) {
   const type     = PART_TYPES.find(t => t.key === partKey);
   const cacheKey = `theme_${themeId}_${type.catId}`;
@@ -878,28 +918,35 @@ async function loadThemeParts(partKey, themeId) {
   }
 
   state.themeLoading[partKey] = true;
-  renderThemeLoadingState(partKey, "Fetching recent sets…");
 
   try {
-    const setsData = await apiFetch(
-      `${API_BASE}/api/v3/lego/sets/?theme_id=${themeId}&page_size=${THEME_MAX_SETS}&ordering=-year`
-    );
-    const setNums = (setsData.results ?? []).map(s => s.set_num);
+    const figNums = await getThemeMinifigs(themeId, msg => renderThemeLoadingState(partKey, msg));
 
     const partsMap = new Map();
-    for (let i = 0; i < setNums.length; i++) {
-      renderThemeLoadingState(partKey, `Scanning set ${i + 1} / ${setNums.length}…`);
-      try {
-        const pd = await apiFetch(
-          `${API_BASE}/api/v3/lego/sets/${setNums[i]}/parts/?page_size=500`
-        );
-        for (const item of (pd.results ?? [])) {
-          const p = item.part;
-          if (p?.part_img_url && p.part_cat_id === type.catId && !partsMap.has(p.part_num)) {
-            partsMap.set(p.part_num, p);
-          }
+    for (let i = 0; i < figNums.length; i++) {
+      renderThemeLoadingState(partKey, `Fetching minifig ${i + 1} / ${figNums.length}…`);
+
+      // A minifig's own parts breakdown is effectively permanent, and is the
+      // same regardless of which category/theme/slot asked for it — cache
+      // it once, by fig_num alone, so it's never re-fetched again after the
+      // first time it's seen (whether that's this theme or a different one).
+      const figCacheKey = `minifig_parts_${figNums[i]}`;
+      let figParts = cacheGet(figCacheKey);
+      if (!figParts) {
+        try {
+          const fd = await apiFetch(`${API_BASE}/api/v3/lego/minifigs/${figNums[i]}/parts/?page_size=50`);
+          figParts = (fd.results ?? []).map(item => item.part).filter(Boolean);
+          cacheSet(figCacheKey, figParts);
+        } catch {
+          figParts = []; // don't cache a fetch failure — worth retrying later
         }
-      } catch {}
+      }
+
+      for (const p of figParts) {
+        if (p?.part_img_url && p.part_cat_id === type.catId && !partsMap.has(p.part_num)) {
+          partsMap.set(p.part_num, p);
+        }
+      }
     }
 
     const raw   = Array.from(partsMap.values());
