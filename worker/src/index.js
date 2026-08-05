@@ -74,12 +74,23 @@ export default {
     const url   = new URL(request.url);
     const cache = caches.default;
 
-    // Bulk parts CSV (catalog.js): proxied so the browser gets a same-site
+    // Bulk CSV dumps (catalog.js): proxied so the browser gets a same-site
     // CORS response instead of hitting cdn.rebrickable.com directly, and so
-    // the cache absorbs repeat downloads across visitors — this file only
-    // changes once a day, so there's no reason every visitor should re-pull
-    // it from origin.
-    if (url.pathname === "/catalog/parts.csv.gz") {
+    // the cache absorbs repeat downloads across visitors — these files only
+    // change once a day, so there's no reason every visitor should re-pull
+    // them from origin.
+    //   parts.csv.gz    — part_num/name/category for the whole catalog.
+    //   elements.csv.gz — every part+color combination LEGO has actually
+    //                     produced (part_num, color_id per row). Rebrickable
+    //                     doesn't expose this as a field on a "part" (a part
+    //                     isn't itself colored — an "element" is a specific
+    //                     part molded in a specific color), so this is what
+    //                     drives which colors legitimately show up per part.
+    const BULK_CSVS = {
+      "/catalog/parts.csv.gz":    "https://cdn.rebrickable.com/media/downloads/parts.csv.gz",
+      "/catalog/elements.csv.gz": "https://cdn.rebrickable.com/media/downloads/elements.csv.gz",
+    };
+    if (url.pathname in BULK_CSVS) {
       const cacheKey = cacheKeyFor(url.pathname);
       const cached = await cache.match(cacheKey);
       if (cached) {
@@ -88,7 +99,7 @@ export default {
         return resp;
       }
 
-      const upstream = await fetch("https://cdn.rebrickable.com/media/downloads/parts.csv.gz");
+      const upstream = await fetch(BULK_CSVS[url.pathname]);
       const body = await upstream.arrayBuffer();
       const bodyHeaders = {
         "Content-Type": upstream.headers.get("Content-Type") ?? "application/gzip",

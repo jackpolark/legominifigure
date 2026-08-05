@@ -16,6 +16,15 @@
    limit, no "0 parts" flash — while a fresh copy is pulled down
    quietly in the background once the local snapshot is a day old.
 
+   Alongside it we download elements.csv — Rebrickable's dump of
+   every part+color combination LEGO has actually produced (a
+   part isn't itself colored; an "element" is a specific part
+   molded in a specific color, same idea as BrickLink listing a
+   part's known colors). That's what drives the color filter:
+   without it, a part only shows up under a color if the color
+   happens to be spelled out in its name, which most headwear/hair
+   pieces never do.
+
    The CSV has no images, so part photos still come from the
    Rebrickable API — but now that's a *progressive enhancement*
    (skeleton → photo) instead of a blocker for showing parts at
@@ -34,7 +43,8 @@ const Catalog = (() => {
   const STORE_IMAGES  = "images";
   const STORE_META    = "meta";
 
-  const CSV_URL = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev/catalog/parts.csv.gz";
+  const CSV_URL          = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev/catalog/parts.csv.gz";
+  const ELEMENTS_CSV_URL = "https://legominifigure-rebrickable-proxy.jackpolark.workers.dev/catalog/elements.csv.gz";
   const CATEGORY_IDS = { hair: 65, head: 59, torso: 60, legs: 61 };
   const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;      // re-download once a day
   const USE_STALE_UP_TO_MS = 7 * REFRESH_AFTER_MS;   // but keep using old data for a week if refresh fails
@@ -165,26 +175,81 @@ const Catalog = (() => {
     return byKey;
   }
 
+  // elements.csv rows are element_id,part_num,color_id,design_id — one row
+  // per real-world mold+color combination LEGO has produced. Filtered down
+  // to only the part_nums we actually track (the full file covers every
+  // part LEGO has ever made, ~110k rows) and collapsed to part_num -> a
+  // de-duped list of color_ids.
+  function buildPartColorsFromCsvRows(rows, knownPartNums) {
+    if (!rows.length) return null;
+    const header  = rows[0];
+    const numCol   = header.indexOf("part_num");
+    const colorCol = header.indexOf("color_id");
+    if (numCol === -1 || colorCol === -1) return null;
+
+    const byPart = {};
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length <= colorCol || !r[numCol]) continue;
+      const partNum = r[numCol];
+      if (!knownPartNums.has(partNum)) continue;
+      const colorId = Number(r[colorCol]);
+      if (!Number.isFinite(colorId)) continue;
+      (byPart[partNum] ??= []);
+      if (!byPart[partNum].includes(colorId)) byPart[partNum].push(colorId);
+    }
+    return byPart;
+  }
+
   async function downloadCatalog() {
     const text = await fetchGunzipText(CSV_URL);
     const rows = parseCsv(text);
     const byKey = buildCatalogFromCsvRows(rows);
     if (!byKey) throw new Error("Unexpected parts.csv format");
-    return byKey;
+
+    const knownPartNums = new Set(Object.values(byKey).flat().map(p => p.part_num));
+    let partColors = {};
+    try {
+      const elementsText = await fetchGunzipText(ELEMENTS_CSV_URL);
+      const elementsRows = parseCsv(elementsText);
+      partColors = buildPartColorsFromCsvRows(elementsRows, knownPartNums) ?? {};
+    } catch (e) {
+      // Non-fatal: the app still works, just without per-part color filtering
+      // until a later refresh succeeds.
+      console.warn("Could not load elements.csv (per-part colors unavailable):", e);
+    }
+
+    return { byKey, partColors };
   }
 
   // ── In-memory state, populated by init() ──
-  const memCatalog = { hair: [], head: [], torso: [], legs: [] };
-  const memImages  = new Map(); // part_num -> img url
+  const memCatalog     = { hair: [], head: [], torso: [], legs: [] };
+  const memPartColors  = {}; // part_num -> [color_id, ...]
+  const memImages      = new Map(); // part_num -> img url
   const updateListeners = new Set();
+  const colorUpdateListeners = new Set();
+  let colorsReady = false;
 
   function onUpdate(fn) { updateListeners.add(fn); }
   function notify(partKey, info) {
     for (const fn of updateListeners) { try { fn(partKey, info); } catch (e) { console.error(e); } }
   }
 
-  async function persistCatalog(byKey) {
+  // Fires once per-part color data first becomes available, and again on
+  // every later refresh — so app.js can invalidate its color-dropdown cache
+  // without needing to know or poll our internal load timing.
+  function onColorsUpdate(fn) {
+    colorUpdateListeners.add(fn);
+    if (colorsReady) fn();
+  }
+  function notifyColors() {
+    colorsReady = true;
+    for (const fn of colorUpdateListeners) { try { fn(); } catch (e) { console.error(e); } }
+  }
+
+  async function persistCatalog({ byKey, partColors }) {
     for (const [key, list] of Object.entries(byKey)) await idbSet(STORE_CATALOG, key, list);
+    await idbSet(STORE_META, "part_colors", partColors);
     await idbSet(STORE_META, "catalog_meta", { fetchedAt: Date.now() });
   }
 
@@ -196,9 +261,13 @@ const Catalog = (() => {
       const fresh = await downloadCatalog();
       for (const key of Object.keys(memCatalog)) {
         const knownNums = new Set(memCatalog[key].map(p => p.part_num));
-        const added = fresh[key].filter(p => !knownNums.has(p.part_num));
-        memCatalog[key] = fresh[key];
+        const added = fresh.byKey[key].filter(p => !knownNums.has(p.part_num));
+        memCatalog[key] = fresh.byKey[key];
         if (added.length) notify(key, { added });
+      }
+      if (Object.keys(fresh.partColors).length) {
+        Object.assign(memPartColors, fresh.partColors);
+        notifyColors();
       }
       await persistCatalog(fresh);
     } catch (e) {
@@ -218,6 +287,11 @@ const Catalog = (() => {
       for (const key of Object.keys(memCatalog)) {
         const cached = await idbGet(STORE_CATALOG, key);
         if (cached?.length) memCatalog[key] = cached;
+      }
+      const cachedColors = await idbGet(STORE_META, "part_colors");
+      if (cachedColors && Object.keys(cachedColors).length) {
+        Object.assign(memPartColors, cachedColors);
+        notifyColors();
       }
     }
 
@@ -274,5 +348,12 @@ const Catalog = (() => {
 
   function getParts(partKey) { return memCatalog[partKey]; }
 
-  return { init, onUpdate, getImage, setImages, reconcile, getParts, refreshInBackground };
+  // ── Colors ──
+  // Real colors a part_num has actually been produced in (from elements.csv),
+  // as Rebrickable color_ids. Empty/undefined means "unknown" — the part
+  // hasn't shown up in an elements.csv row yet (e.g. added very recently) —
+  // not "colorless"; callers should treat that as no data rather than zero.
+  function getPartColorIds(partNum) { return memPartColors[partNum]; }
+
+  return { init, onUpdate, getImage, setImages, reconcile, getParts, refreshInBackground, onColorsUpdate, getPartColorIds };
 })();

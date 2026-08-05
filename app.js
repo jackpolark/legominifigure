@@ -749,22 +749,29 @@ function startLiveReconciliation() {
 
 
 // ──── Color Filter ────────────────────────────────────────────────────────────
-// A part's official color(s) aren't a separate field in the offline catalog
-// (or the live API's part listing) — for these combo mold+print IDs, the
-// color is just whatever's written into the name ("Hips and Black Legs",
-// "...Yellow Neck, Red Bandana... Tan Arms..."). So the filter works by
-// matching Rebrickable's own official color names (fetched once) against
-// each part's name as whole words. Note this means a torso whose print just
-// mentions a color in passing (e.g. a red bandana) will show up under "Red"
-// even though the torso itself isn't red — the tradeoff for not requiring
-// per-part color-area data the catalog doesn't have.
+// A part's real colors come from catalog.js's per-part color map (built from
+// Rebrickable's elements.csv — every mold+color combination LEGO has actually
+// produced, e.g. BrickLink's "this part is also available in..." list). That
+// covers any part, whether or not its color is spelled out in the name — most
+// hair/headwear pieces aren't ("Minifig, Hair Tousled" says nothing about the
+// half-dozen colors it's molded in), unlike combo mold+print parts whose name
+// does often carry it ("Hips and Black Legs").
+//
+// For a part with no elements.csv entry yet (very recently added, before the
+// next daily refresh), fall back to matching Rebrickable's official color
+// names against the part's name as whole words — same heuristic this filter
+// used everywhere before per-part color data existed. That fallback can
+// over-match (a torso whose print just mentions "red" in passing), but it
+// only ever applies to that small not-yet-known slice of parts.
 let COLOR_REGEXES = [];
+let COLOR_ID_TO_NAME = {};
+let colorDataVersion = 0;
 
 async function loadColorList() {
-  const cached = cacheGet("colors_v1");
-  let names = cached;
+  const cached = cacheGet("colors_v2");
+  let colors = cached;
 
-  if (!names?.length) {
+  if (!colors?.length) {
     try {
       let url = `${API_BASE}/api/v3/lego/colors/?page_size=1000`;
       const all = [];
@@ -773,43 +780,64 @@ async function loadColorList() {
         all.push(...(data.results ?? []));
         url = data.next;
       }
-      names = [...new Set(all.map(c => c.name).filter(n => n && !n.startsWith("[")))];
-      cacheSet("colors_v1", names);
+      const byName = new Map();
+      for (const c of all) {
+        if (c.name && !c.name.startsWith("[")) byName.set(c.name, c.id);
+      }
+      colors = [...byName].map(([name, id]) => ({ id, name }));
+      cacheSet("colors_v2", colors);
     } catch (e) {
       console.warn("Could not load color list:", e);
       return;
     }
   }
 
+  COLOR_ID_TO_NAME = {};
+  for (const { id, name } of colors) COLOR_ID_TO_NAME[id] = name;
+
   // Longest name first so "Dark Red" claims its match before whatever else
   // might otherwise be tried against the same text.
-  COLOR_REGEXES = names
+  COLOR_REGEXES = colors
+    .map(c => c.name)
     .sort((a, b) => b.length - a.length)
     .map(name => ({ name, re: new RegExp(`\\b${escapeRegex(name.toLowerCase())}\\b`) }));
 
-  // Options may have been computed (and cached) before this resolved, back
-  // when COLOR_REGEXES was still empty — force every slot to recompute now.
-  for (const key of Object.keys(colorOptionsCache)) colorOptionsCache[key].len = -1;
+  colorDataVersion++;
   PART_TYPES.forEach(t => renderColorSelect(t.key));
 }
 
-const colorOptionsCache = { hair: { len: -1, opts: [] }, head: { len: -1, opts: [] }, torso: { len: -1, opts: [] }, legs: { len: -1, opts: [] } };
+// Re-render whenever catalog.js's per-part color map updates (first load,
+// and any later daily refresh) — same "bump version, re-render" as above.
+Catalog.onColorsUpdate(() => {
+  colorDataVersion++;
+  PART_TYPES.forEach(t => renderColorSelect(t.key));
+});
+
+const colorOptionsCache = { hair: { len: -1, ver: -1, opts: [] }, head: { len: -1, ver: -1, opts: [] }, torso: { len: -1, ver: -1, opts: [] }, legs: { len: -1, ver: -1, opts: [] } };
+
+// A part's color names, from real per-part data if catalog.js has it yet,
+// else the name-text heuristic (see comment above loadColorList).
+function getPartColorNames(part) {
+  const colorIds = Catalog.getPartColorIds(part.part_num);
+  if (colorIds?.length) {
+    return colorIds.map(id => COLOR_ID_TO_NAME[id]).filter(Boolean);
+  }
+  const name = part.name.toLowerCase();
+  return COLOR_REGEXES.filter(c => c.re.test(name)).map(c => c.name);
+}
 
 function getColorOptions(partKey) {
   const list = state.parts[partKey];
   if (!COLOR_REGEXES.length) return [];
   const cache = colorOptionsCache[partKey];
-  if (cache.len === list.length) return cache.opts;
+  if (cache.len === list.length && cache.ver === colorDataVersion) return cache.opts;
 
   const found = new Set();
   for (const p of list) {
-    const name = p.name.toLowerCase();
-    for (const c of COLOR_REGEXES) {
-      if (c.re.test(name)) found.add(c.name);
-    }
+    for (const name of getPartColorNames(p)) found.add(name);
   }
   const opts = [...found].sort();
-  colorOptionsCache[partKey] = { len: list.length, opts };
+  colorOptionsCache[partKey] = { len: list.length, ver: colorDataVersion, opts };
   return opts;
 }
 
@@ -1336,8 +1364,7 @@ function getVisibleParts(partKey) {
 
   const color = state.color[partKey];
   if (color !== "All") {
-    const entry = COLOR_REGEXES.find(c => c.name === color);
-    if (entry) list = list.filter(p => entry.re.test(p.name.toLowerCase()));
+    list = list.filter(p => getPartColorNames(p).includes(color));
   }
 
   // In catalog mode the search box filters the local metadata directly
